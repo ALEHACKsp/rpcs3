@@ -54,15 +54,7 @@
 #include <cfenv>
 #include "Utilities/GSL.h"
 
-const bool s_use_ssse3 =
-#ifdef _MSC_VER
-	utils::has_ssse3();
-#elif __SSSE3__
-	true;
-#else
-	false;
-#define _mm_shuffle_epi8
-#endif
+const bool s_use_ssse3 = utils::has_ssse3();
 
 extern u64 get_guest_system_time();
 
@@ -839,7 +831,7 @@ void ppu_thread::fast_call(u32 addr, u32 rtoc)
 		return fmt::format("%s [0x%08x]", thread_ctrl::get_name(), _this->cia);
 	};
 
-	auto at_ret = gsl::finally([&]()
+	auto at_ret = [&]()
 	{
 		if (std::uncaught_exceptions())
 		{
@@ -866,9 +858,19 @@ void ppu_thread::fast_call(u32 addr, u32 rtoc)
 			current_function = old_func;
 			g_tls_log_prefix = old_fmt;
 		}
-	});
+	};
 
-	exec_task();
+	try
+	{
+		exec_task();
+	}
+	catch (...)
+	{
+		at_ret();
+		throw;
+	}
+
+	at_ret();
 }
 
 u32 ppu_thread::stack_push(u32 size, u32 align_v)

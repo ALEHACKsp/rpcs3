@@ -14,6 +14,7 @@
 #include "rsx_utils.h"
 #include "Emu/Cell/lv2/sys_event.h"
 #include "Emu/Cell/Modules/cellGcmSys.h"
+#include "Overlays/overlay_perf_metrics.h"
 
 #include "Utilities/span.h"
 #include "Utilities/StrUtil.h"
@@ -437,6 +438,8 @@ namespace rsx
 				perf_overlay->set_font_size(perf_settings.font_size);
 				perf_overlay->set_margins(perf_settings.margin_x, perf_settings.margin_y);
 				perf_overlay->set_opacity(perf_settings.opacity / 100.f);
+				perf_overlay->set_framerate_graph_enabled(perf_settings.framerate_graph_enabled.get());
+				perf_overlay->set_frametime_graph_enabled(perf_settings.frametime_graph_enabled.get());
 				perf_overlay->init();
 			}
 		}

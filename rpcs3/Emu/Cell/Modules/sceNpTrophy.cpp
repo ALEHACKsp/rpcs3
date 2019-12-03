@@ -17,7 +17,6 @@
 
 #include "Emu/Cell/lv2/sys_event.h"
 #include "Emu/Cell/lv2/sys_process.h"
-#include "Emu/Cell/lv2/sys_timer.h"
 
 LOG_CHANNEL(sceNpTrophy);
 
@@ -413,30 +412,45 @@ error_code sceNpTrophyRegisterContext(ppu_thread& ppu, u32 context, u32 handle, 
 		{ SCE_NP_TROPHY_STATUS_PROCESSING_COMPLETE, 0 }
 	};
 
-	static atomic_t<u32> queued;
+	lv2_obj::sleep(ppu);
 
-	queued = 0;
+	// Create a counter which is destroyed after the function ends
+	const auto queued = std::make_shared<atomic_t<u32>>(0);
+	std::weak_ptr<atomic_t<u32>> wkptr = queued;
+
 	for (auto status : statuses)
 	{
 		// One status max per cellSysutilCheckCallback call
-		queued += status.second;
+		*queued += status.second;
 		for (u32 completed = 0; completed <= status.second; completed++)
 		{
-			sysutil_register_cb([=](ppu_thread& cb_ppu) -> s32
+			sysutil_register_cb([statusCb, status, context, completed, arg, wkptr](ppu_thread& cb_ppu) -> s32
 			{
 				statusCb(cb_ppu, context, status.first, completed, status.second, arg);
-				queued--;
+
+				const auto queued = wkptr.lock();
+				if (queued && (*queued)-- == 1)
+				{
+					queued->notify_one();
+				}
+
 				return 0;
 			});
 		}
 
-		u32 passed_time=0;
-		while (queued)
+		u64 current = get_system_time();
+		const u64 until = current + 300'000;
+
+		// If too much time passes just send the rest of the events anyway
+		for (u32 old_value; current < until && (old_value = *queued);
+			current = get_system_time())
 		{
-			sys_timer_usleep(ppu, 5000);
-			passed_time += 5;
-			// If too much time passes just send the rest of the events anyway
-			if (passed_time > 300) break;
+			queued->wait(old_value, atomic_wait_timeout{std::min<u64>((until - current) * 1000, 300'000'000)});
+
+			if (ppu.is_stopped())
+			{
+				return 0;
+			}
 		}
 	}
 

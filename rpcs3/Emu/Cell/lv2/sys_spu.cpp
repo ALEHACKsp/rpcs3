@@ -89,14 +89,14 @@ void sys_spu_image::deploy(u32 loc, sys_spu_segment* segs, u32 nsegs)
 
 		fmt::append(dump, "\n\t[%d] t=0x%x, ls=0x%x, size=0x%x, addr=0x%x", i, seg.type, seg.ls, seg.size, seg.addr);
 
-		sha1_update(&sha, (uchar*)&seg.type, sizeof(seg.type));
+		sha1_update(&sha, reinterpret_cast<uchar*>(&seg.type), sizeof(seg.type));
 
 		// Hash big-endian values
 		if (seg.type == SYS_SPU_SEGMENT_TYPE_COPY)
 		{
 			std::memcpy(vm::base(loc + seg.ls), vm::base(seg.addr), seg.size);
-			sha1_update(&sha, (uchar*)&seg.size, sizeof(seg.size));
-			sha1_update(&sha, (uchar*)&seg.ls, sizeof(seg.ls));
+			sha1_update(&sha, reinterpret_cast<uchar*>(&seg.size), sizeof(seg.size));
+			sha1_update(&sha, reinterpret_cast<uchar*>(&seg.ls), sizeof(seg.ls));
 			sha1_update(&sha, vm::_ptr<uchar>(seg.addr), seg.size);
 		}
 		else if (seg.type == SYS_SPU_SEGMENT_TYPE_FILL)
@@ -107,14 +107,14 @@ void sys_spu_image::deploy(u32 loc, sys_spu_segment* segs, u32 nsegs)
 			}
 
 			std::fill_n(vm::_ptr<u32>(loc + seg.ls), seg.size / 4, seg.addr);
-			sha1_update(&sha, (uchar*)&seg.size, sizeof(seg.size));
-			sha1_update(&sha, (uchar*)&seg.ls, sizeof(seg.ls));
-			sha1_update(&sha, (uchar*)&seg.addr, sizeof(seg.addr));
+			sha1_update(&sha, reinterpret_cast<uchar*>(&seg.size), sizeof(seg.size));
+			sha1_update(&sha, reinterpret_cast<uchar*>(&seg.ls), sizeof(seg.ls));
+			sha1_update(&sha, reinterpret_cast<uchar*>(&seg.addr), sizeof(seg.addr));
 		}
 		else if (seg.type == SYS_SPU_SEGMENT_TYPE_INFO)
 		{
 			const be_t<u32> size = seg.size + 0x14; // Workaround
-			sha1_update(&sha, (uchar*)&size, sizeof(size));
+			sha1_update(&sha, reinterpret_cast<const uchar*>(&size), sizeof(size));
 		}
 	}
 
@@ -858,16 +858,16 @@ error_code sys_spu_thread_write_ls(ppu_thread& ppu, u32 id, u32 lsa, u64 value, 
 
 	sys_spu.trace("sys_spu_thread_write_ls(id=0x%x, lsa=0x%05x, value=0x%llx, type=%d)", id, lsa, value, type);
 
+	if (lsa >= 0x40000 || type > 8 || !type || (type | lsa) & (type - 1)) // check range and alignment
+	{
+		return CELL_EINVAL;
+	}
+
 	const auto thread = idm::get<named_thread<spu_thread>>(id);
 
 	if (UNLIKELY(!thread || !thread->group))
 	{
 		return CELL_ESRCH;
-	}
-
-	if (lsa >= 0x40000 || lsa + type > 0x40000 || lsa % type) // check range and alignment
-	{
-		return CELL_EINVAL;
 	}
 
 	const auto group = thread->group;
@@ -881,11 +881,11 @@ error_code sys_spu_thread_write_ls(ppu_thread& ppu, u32 id, u32 lsa, u64 value, 
 
 	switch (type)
 	{
-	case 1: thread->_ref<u8>(lsa) = (u8)value; break;
-	case 2: thread->_ref<u16>(lsa) = (u16)value; break;
-	case 4: thread->_ref<u32>(lsa) = (u32)value; break;
+	case 1: thread->_ref<u8>(lsa) = static_cast<u8>(value); break;
+	case 2: thread->_ref<u16>(lsa) = static_cast<u16>(value); break;
+	case 4: thread->_ref<u32>(lsa) = static_cast<u32>(value); break;
 	case 8: thread->_ref<u64>(lsa) = value; break;
-	default: return CELL_EINVAL;
+	default: ASSUME(0);
 	}
 
 	return CELL_OK;
@@ -897,16 +897,16 @@ error_code sys_spu_thread_read_ls(ppu_thread& ppu, u32 id, u32 lsa, vm::ptr<u64>
 
 	sys_spu.trace("sys_spu_thread_read_ls(id=0x%x, lsa=0x%05x, value=*0x%x, type=%d)", id, lsa, value, type);
 
+	if (lsa >= 0x40000 || type > 8 || !type || (type | lsa) & (type - 1)) // check range and alignment
+	{
+		return CELL_EINVAL;
+	}
+
 	const auto thread = idm::get<named_thread<spu_thread>>(id);
 
 	if (UNLIKELY(!thread || !thread->group))
 	{
 		return CELL_ESRCH;
-	}
-
-	if (lsa >= 0x40000 || lsa + type > 0x40000 || lsa % type) // check range and alignment
-	{
-		return CELL_EINVAL;
 	}
 
 	const auto group = thread->group;
@@ -924,7 +924,7 @@ error_code sys_spu_thread_read_ls(ppu_thread& ppu, u32 id, u32 lsa, vm::ptr<u64>
 	case 2: *value = thread->_ref<u16>(lsa); break;
 	case 4: *value = thread->_ref<u32>(lsa); break;
 	case 8: *value = thread->_ref<u64>(lsa); break;
-	default: return CELL_EINVAL;
+	default: ASSUME(0);
 	}
 
 	return CELL_OK;
@@ -1219,29 +1219,37 @@ error_code sys_spu_thread_bind_queue(ppu_thread& ppu, u32 id, u32 spuq, u32 spuq
 
 	std::lock_guard lock(thread->group->mutex);
 
+	decltype(std::data(thread->spuq)) q{};
+
 	for (auto& v : thread->spuq)
 	{
-		if (auto q = v.second.lock())
+		// Check if the entry is assigned at all
+		if (const decltype(v.second) test{};
+			!v.second.owner_before(test) && !test.owner_before(v.second))
 		{
-			if (v.first == spuq_num || q == queue)
+			if (!q)
 			{
-				return CELL_EBUSY;
+				q = &v;
 			}
-		}
-	}
 
-	for (auto& v : thread->spuq)
-	{
-		if (v.second.expired())
+			continue;
+		}
+
+		if (v.first == spuq_num ||
+			(!v.second.owner_before(queue) && !queue.owner_before(v.second)))
 		{
-			v.first = spuq_num;
-			v.second = queue;
-
-			return CELL_OK;
+			return CELL_EBUSY;
 		}
 	}
 
-	return CELL_EAGAIN;
+	if (!q)
+	{
+		return CELL_EAGAIN;
+	}
+
+	q->first = spuq_num;
+	q->second = queue;
+	return CELL_OK;
 }
 
 error_code sys_spu_thread_unbind_queue(ppu_thread& ppu, u32 id, u32 spuq_num)
@@ -1261,12 +1269,19 @@ error_code sys_spu_thread_unbind_queue(ppu_thread& ppu, u32 id, u32 spuq_num)
 
 	for (auto& v : thread->spuq)
 	{
-		if (v.first == spuq_num && !v.second.expired())
+		if (v.first != spuq_num)
 		{
-			v.second.reset();
-
-			return CELL_OK;
+			continue;
 		}
+
+		if (const decltype(v.second) test{};
+			!v.second.owner_before(test) && !test.owner_before(v.second))
+		{
+			continue;
+		}
+
+		v.second.reset();
+		return CELL_OK;
 	}
 
 	return CELL_ESRCH;
@@ -1371,6 +1386,43 @@ error_code sys_spu_thread_group_disconnect_event_all_threads(ppu_thread& ppu, u3
 		{
 			t->spup[spup].reset();
 		}
+	}
+
+	return CELL_OK;
+}
+
+error_code sys_spu_thread_group_log(ppu_thread& ppu, s32 command, vm::ptr<s32> stat)
+{
+	vm::temporary_unlock(ppu);
+
+	sys_spu.warning("sys_spu_thread_group_log(command=0x%x, stat=*0x%x)", command, stat);
+
+	struct spu_group_log_state_t
+	{
+		atomic_t<s32> state = SYS_SPU_THREAD_GROUP_LOG_ON;
+	};
+
+	const auto state = g_fxo->get<spu_group_log_state_t>();
+
+	switch (command)
+	{
+	case SYS_SPU_THREAD_GROUP_LOG_GET_STATUS:
+	{
+		if (!stat)
+		{
+			return CELL_EFAULT;
+		}
+
+		*stat = state->state;
+		break;
+	}
+	case SYS_SPU_THREAD_GROUP_LOG_ON:
+	case SYS_SPU_THREAD_GROUP_LOG_OFF:
+	{
+		state->state.release(command);
+		break;
+	}
+	default: return CELL_EINVAL;
 	}
 
 	return CELL_OK;
@@ -1695,7 +1747,7 @@ error_code sys_raw_spu_get_spu_cfg(ppu_thread& ppu, u32 id, vm::ptr<u32> value)
 		return CELL_ESRCH;
 	}
 
-	*value = (u32)thread->snr_config;
+	*value = static_cast<u32>(thread->snr_config);
 
 	return CELL_OK;
 }

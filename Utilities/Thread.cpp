@@ -1319,14 +1319,15 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context)
 			{
 				data2 = (SYS_MEMORY_PAGE_FAULT_TYPE_PPU_THREAD << 32) | cpu->id;
 			}
-			else if (static_cast<spu_thread*>(cpu)->group)
-			{
-				data2 = (SYS_MEMORY_PAGE_FAULT_TYPE_SPU_THREAD << 32) | cpu->id;
-			}
 			else
 			{
-				// Index is the correct ID in RawSPU
-				data2 = (SYS_MEMORY_PAGE_FAULT_TYPE_RAW_SPU << 32) | static_cast<spu_thread*>(cpu)->index;
+				const auto& spu = static_cast<spu_thread&>(*cpu);
+
+				const u64 type = spu.offset < RAW_SPU_BASE_ADDR ?
+					SYS_MEMORY_PAGE_FAULT_TYPE_SPU_THREAD :
+					SYS_MEMORY_PAGE_FAULT_TYPE_RAW_SPU;
+
+				data2 = (type << 32) | spu.lv2_id;
 			}
 
 			u64 data3;
@@ -1714,7 +1715,7 @@ void thread_base::initialize(bool(*wait_cb)(const void*))
 #elif defined(__DragonFly__) || defined(__FreeBSD__) || defined(__OpenBSD__)
 	pthread_set_name_np(pthread_self(), m_name.get().c_str());
 #elif defined(__NetBSD__)
-	pthread_setname_np(pthread_self(), "%s", const_cast<void*>(static_cast<void*>(m_name.get().c_str())));
+	pthread_setname_np(pthread_self(), "%s", const_cast<char*>(m_name.get().c_str()));
 #elif !defined(_WIN32)
 	pthread_setname_np(pthread_self(), m_name.get().substr(0, 15).c_str());
 #endif
@@ -1806,7 +1807,8 @@ void thread_ctrl::_wait_for(u64 usec, bool alert /* true */)
 		timeout.it_interval.tv_sec = 0;
 		timeout.it_interval.tv_nsec = 0;
 		timerfd_settime(_this->m_timer, 0, &timeout, NULL);
-		read(_this->m_timer, &missed, sizeof(missed));
+		if (read(_this->m_timer, &missed, sizeof(missed)) != sizeof(missed))
+			LOG_ERROR(GENERAL, "timerfd: read() failed");
 		return;
 	}
 #endif

@@ -79,6 +79,35 @@ void fmt_class_string<sys_net_error>::format(std::string& out, u64 arg)
 	});
 }
 
+#ifdef _WIN32
+// Workaround function for WSAPoll not reporting failed connections
+void windows_poll(pollfd* fds, unsigned long nfds, int timeout, bool* connecting)
+{
+	int r = ::WSAPoll(fds, nfds, timeout);
+	for (unsigned long i = 0; i < nfds; i++)
+	{
+		if (connecting[i])
+		{
+			if (!fds[i].revents)
+			{
+				int error = 0;
+				socklen_t intlen = sizeof(error);
+				if (getsockopt(fds[i].fd, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&error), &intlen) == -1 || error != 0)
+				{
+					// Connection silently failed
+					connecting[i] = false;
+					fds[i].revents = POLLERR | POLLHUP | (fds[i].events & (POLLIN | POLLOUT));
+				}
+			}
+			else
+			{
+				connecting[i] = false;
+			}
+		}
+	}
+}
+#endif
+
 // Error helper functions
 static sys_net_error get_last_error(bool is_blocking, int native_error = 0)
 {
@@ -186,12 +215,16 @@ struct network_thread
 		s_to_awake.clear();
 
 		::pollfd fds[lv2_socket::id_count]{};
+#ifdef _WIN32
+		bool connecting[lv2_socket::id_count]{};
+		bool was_connecting[lv2_socket::id_count]{};
+#endif
 
 		while (thread_ctrl::state() != thread_state::aborting)
 		{
 			// Wait with 1ms timeout
 #ifdef _WIN32
-			::WSAPoll(fds, socklist.size(), 1);
+			windows_poll(fds, socklist.size(), 1, connecting);
 #else
 			::poll(fds, socklist.size(), 1);
 #endif
@@ -203,6 +236,11 @@ struct network_thread
 				bs_t<lv2_socket::poll> events{};
 
 				lv2_socket& sock = *socklist[i];
+
+#ifdef _WIN32
+				if (was_connecting[i] && !connecting[i])
+					sock.is_connecting = false;
+#endif
 
 				if (fds[i].revents & (POLLIN | POLLHUP) && socklist[i]->events.test_and_reset(lv2_socket::poll::read))
 					events += lv2_socket::poll::read;
@@ -265,6 +303,10 @@ struct network_thread
 					(events & lv2_socket::poll::write ? POLLOUT : 0) |
 					0;
 				fds[i].revents = 0;
+#ifdef _WIN32
+				was_connecting[i] = socklist[i]->is_connecting;
+				connecting[i] = socklist[i]->is_connecting;
+#endif
 			}
 		}
 	}
@@ -310,9 +352,6 @@ error_code sys_net_bnet_accept(ppu_thread& ppu, s32 s, vm::ptr<sys_net_sockaddr>
 
 		//if (!(sock.events & lv2_socket::poll::read))
 		{
-#ifdef _WIN32
-			sock.ev_set &= ~FD_ACCEPT;
-#endif
 			native_socket = ::accept(sock.socket, reinterpret_cast<struct sockaddr*>(&native_addr), &native_addrlen);
 
 			if (native_socket != -1)
@@ -334,9 +373,6 @@ error_code sys_net_bnet_accept(ppu_thread& ppu, s32 s, vm::ptr<sys_net_sockaddr>
 		{
 			if (events & lv2_socket::poll::read)
 			{
-#ifdef _WIN32
-				sock.ev_set &= ~FD_ACCEPT;
-#endif
 				native_socket = ::accept(sock.socket, reinterpret_cast<struct sockaddr*>(&native_addr), &native_addrlen);
 
 				if (native_socket != -1 || (result = get_last_error(!sock.so_nbio)))
@@ -522,6 +558,9 @@ error_code sys_net_bnet_connect(ppu_thread& ppu, s32 s, vm::ptr<sys_net_sockaddr
 		{
 			if (result == SYS_NET_EWOULDBLOCK)
 			{
+#ifdef _WIN32
+				sock.is_connecting = true;
+#endif
 				result = SYS_NET_EINPROGRESS;
 			}
 
@@ -532,9 +571,6 @@ error_code sys_net_bnet_connect(ppu_thread& ppu, s32 s, vm::ptr<sys_net_sockaddr
 				{
 					if (events & lv2_socket::poll::write)
 					{
-#ifdef _WIN32
-						sock.ev_set &= ~FD_CONNECT;
-#endif
 						int native_error;
 						::socklen_t size = sizeof(native_error);
 						if (::getsockopt(sock.socket, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&native_error), &size) != 0 || size != sizeof(int))
@@ -563,9 +599,6 @@ error_code sys_net_bnet_connect(ppu_thread& ppu, s32 s, vm::ptr<sys_net_sockaddr
 		{
 			if (events & lv2_socket::poll::write)
 			{
-#ifdef _WIN32
-				sock.ev_set &= ~FD_CONNECT;
-#endif
 				int native_error;
 				::socklen_t size = sizeof(native_error);
 				if (::getsockopt(sock.socket, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&native_error), &size) != 0 || size != sizeof(int))
@@ -986,9 +1019,6 @@ error_code sys_net_bnet_recvfrom(ppu_thread& ppu, s32 s, vm::ptr<void> buf, u32 
 
 		//if (!(sock.events & lv2_socket::poll::read))
 		{
-#ifdef _WIN32
-			if (!(native_flags & MSG_PEEK)) sock.ev_set &= ~FD_READ;
-#endif
 			native_result = ::recvfrom(sock.socket, reinterpret_cast<char*>(buf.get_ptr()), len, native_flags, reinterpret_cast<struct sockaddr*>(&native_addr), &native_addrlen);
 
 			if (native_result >= 0)
@@ -1010,9 +1040,6 @@ error_code sys_net_bnet_recvfrom(ppu_thread& ppu, s32 s, vm::ptr<void> buf, u32 
 		{
 			if (events & lv2_socket::poll::read)
 			{
-#ifdef _WIN32
-				if (!(native_flags & MSG_PEEK)) sock.ev_set &= ~FD_READ;
-#endif
 				native_result = ::recvfrom(sock.socket, reinterpret_cast<char*>(buf.get_ptr()), len, native_flags, reinterpret_cast<struct sockaddr*>(&native_addr), &native_addrlen);
 
 				if (native_result >= 0 || (result = get_last_error(!sock.so_nbio && (flags & SYS_NET_MSG_DONTWAIT) == 0)))
@@ -1162,9 +1189,6 @@ error_code sys_net_bnet_sendto(ppu_thread& ppu, s32 s, vm::cptr<void> buf, u32 l
 
 		//if (!(sock.events & lv2_socket::poll::write))
 		{
-#ifdef _WIN32
-			sock.ev_set &= ~FD_WRITE;
-#endif
 			native_result = ::sendto(sock.socket, reinterpret_cast<const char*>(buf.get_ptr()), len, native_flags, addr ? reinterpret_cast<struct sockaddr*>(&name) : nullptr, addr ? namelen : 0);
 
 			if (native_result >= 0)
@@ -1186,9 +1210,6 @@ error_code sys_net_bnet_sendto(ppu_thread& ppu, s32 s, vm::cptr<void> buf, u32 l
 		{
 			if (events & lv2_socket::poll::write)
 			{
-#ifdef _WIN32
-				sock.ev_set &= ~FD_WRITE;
-#endif
 				native_result = ::sendto(sock.socket, reinterpret_cast<const char*>(buf.get_ptr()), len, native_flags, addr ? reinterpret_cast<struct sockaddr*>(&name) : nullptr, addr ? namelen : 0);
 
 				if (native_result >= 0 || (result = get_last_error(!sock.so_nbio && (flags & SYS_NET_MSG_DONTWAIT) == 0)))
@@ -1577,6 +1598,9 @@ error_code sys_net_bnet_poll(ppu_thread& ppu, vm::ptr<sys_net_pollfd> fds, s32 n
 		reader_lock lock(id_manager::g_mutex);
 
 		::pollfd _fds[1024]{};
+#ifdef _WIN32
+		bool connecting[1024]{};
+#endif
 
 		for (s32 i = 0; i < nfds; i++)
 		{
@@ -1597,6 +1621,9 @@ error_code sys_net_bnet_poll(ppu_thread& ppu, vm::ptr<sys_net_pollfd> fds, s32 n
 					_fds[i].events |= POLLIN;
 				if (fds[i].events & SYS_NET_POLLOUT)
 					_fds[i].events |= POLLOUT;
+#ifdef _WIN32
+				connecting[i] = sock->is_connecting;
+#endif
 			}
 			else
 			{
@@ -1606,7 +1633,7 @@ error_code sys_net_bnet_poll(ppu_thread& ppu, vm::ptr<sys_net_pollfd> fds, s32 n
 		}
 
 #ifdef _WIN32
-		::WSAPoll(_fds, nfds, 0);
+		windows_poll(_fds, nfds, 0, connecting);
 #else
 		::poll(_fds, nfds, 0);
 #endif
@@ -1640,6 +1667,10 @@ error_code sys_net_bnet_poll(ppu_thread& ppu, vm::ptr<sys_net_pollfd> fds, s32 n
 			if (auto sock = idm::check_unlocked<lv2_socket>(fds[i].fd))
 			{
 				std::lock_guard lock(sock->mutex);
+
+#ifdef _WIN32
+				sock->is_connecting = connecting[i];
+#endif
 
 				bs_t<lv2_socket::poll> selected = +lv2_socket::poll::error;
 
@@ -1737,6 +1768,9 @@ error_code sys_net_bnet_select(ppu_thread& ppu, s32 nfds, vm::ptr<sys_net_fd_set
 		reader_lock lock(id_manager::g_mutex);
 
 		::pollfd _fds[1024]{};
+#ifdef _WIN32
+		bool connecting[1024]{};
+#endif
 
 		for (s32 i = 0; i < nfds; i++)
 		{
@@ -1766,6 +1800,9 @@ error_code sys_net_bnet_select(ppu_thread& ppu, s32 nfds, vm::ptr<sys_net_fd_set
 					_fds[i].events |= POLLIN;
 				if (selected & lv2_socket::poll::write)
 					_fds[i].events |= POLLOUT;
+#ifdef _WIN32
+				connecting[i] = sock->is_connecting;
+#endif
 			}
 			else
 			{
@@ -1774,7 +1811,7 @@ error_code sys_net_bnet_select(ppu_thread& ppu, s32 nfds, vm::ptr<sys_net_fd_set
 		}
 
 #ifdef _WIN32
-		::WSAPoll(_fds, nfds, 0);
+		windows_poll(_fds, nfds, 0, connecting);
 #else
 		::poll(_fds, nfds, 0);
 #endif
@@ -1826,6 +1863,10 @@ error_code sys_net_bnet_select(ppu_thread& ppu, s32 nfds, vm::ptr<sys_net_fd_set
 			if (auto sock = idm::check_unlocked<lv2_socket>((lv2_socket::id_base & -1024) + i))
 			{
 				std::lock_guard lock(sock->mutex);
+
+#ifdef _WIN32
+				sock->is_connecting = connecting[i];
+#endif
 
 				sock->events += selected;
 				sock->queue.emplace_back(ppu.id, [sock, selected, i, &rread, &rwrite, &rexcept, &signaled, &ppu](bs_t<lv2_socket::poll> events)

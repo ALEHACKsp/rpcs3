@@ -173,9 +173,6 @@
     <ClCompile Include="Emu\RSX\Common\FragmentProgramDecompiler.cpp">
       <Filter>Emu\GPU\RSX\Common</Filter>
     </ClCompile>
-    <ClCompile Include="Emu\RSX\Common\ShaderParam.cpp">
-      <Filter>Emu\GPU\RSX\Common</Filter>
-    </ClCompile>
     <ClCompile Include="Emu\RSX\Common\VertexProgramDecompiler.cpp">
       <Filter>Emu\GPU\RSX\Common</Filter>
     </ClCompile>
@@ -1580,6 +1577,12 @@
       <Filter>Emu\GPU\RSX\Overlays</Filter>
     </ClInclude>
     <ClInclude Include="Emu\Cell\Modules\cellCrossController.h">
+      <Filter>Emu\Cell\Modules</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\Cell\Modules\cellRemotePlay.h">
+      <Filter>Emu\Cell\Modules</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\Cell\Modules\cellStorage.h">
       <Filter>Emu\Cell\Modules</Filter>
     </ClInclude>
   </ItemGroup>

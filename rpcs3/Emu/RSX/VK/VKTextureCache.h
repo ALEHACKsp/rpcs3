@@ -1025,7 +1025,7 @@ namespace vk
 			return result;
 		}
 
-		vk::image_view* generate_2d_mipmaps_from_images(vk::command_buffer& cmd, u32 gcm_format, u16 width, u16 height,
+		vk::image_view* generate_2d_mipmaps_from_images(vk::command_buffer& cmd, u32 /*gcm_format*/, u16 width, u16 height,
 			const std::vector<copy_region_descriptor>& sections_to_copy, const rsx::texture_channel_remap_t& remap_vector) override
 		{
 			const auto _template = sections_to_copy.front().src;
@@ -1336,15 +1336,10 @@ namespace vk
 			if (cmd.access_hint != vk::command_buffer::access_type_hint::all)
 			{
 				// Primary access command queue, must restart it after
-				VkFence submit_fence;
-				VkFenceCreateInfo info{};
-				info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-				vkCreateFence(*m_device, &info, nullptr, &submit_fence);
+				vk::fence submit_fence(*m_device);
+				cmd.submit(m_submit_queue, VK_NULL_HANDLE, VK_NULL_HANDLE, &submit_fence, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
 
-				cmd.submit(m_submit_queue, VK_NULL_HANDLE, VK_NULL_HANDLE, submit_fence, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
-
-				vk::wait_for_fence(submit_fence, GENERAL_WAIT_TIMEOUT);
-				vkDestroyFence(*m_device, submit_fence, nullptr);
+				vk::wait_for_fence(&submit_fence, GENERAL_WAIT_TIMEOUT);
 
 				CHECK_RESULT(vkResetCommandBuffer(cmd, 0));
 				cmd.begin();

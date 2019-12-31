@@ -278,13 +278,12 @@ public:
 	void clear()
 	{
 		values.release({});
-		value3.release(0);
 	}
 
 	// push unconditionally (overwriting latest value), returns true if needs signaling
 	void push(cpu_thread& spu, u32 value)
 	{
-		value3.store(value);
+		value3.release(value);
 
 		if (values.atomic_op([=](sync_var_t& data) -> bool
 		{

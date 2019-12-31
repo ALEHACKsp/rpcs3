@@ -164,16 +164,16 @@ static error_code select_and_delete(ppu_thread& ppu)
 
 	while (true)
 	{
-		// Yield
+		// Yield before a blocking dialog is being spawned
 		lv2_obj::sleep(ppu);
 
-		// Display Save Data List asynchronously in the GUI thread.
+		// Display a blocking Save Data List asynchronously in the GUI thread.
 		if (auto save_dialog = Emu.GetCallbacks().get_save_dialog())
 		{
 			selected = save_dialog->ShowSaveDataList(save_entries, focused, SAVEDATA_OP_LIST_DELETE, vm::null);
 		}
 
-		// Reschedule
+		// Reschedule after a blocking dialog returns
 		if (ppu.check_state())
 		{
 			return 0;
@@ -192,9 +192,20 @@ static error_code select_and_delete(ppu_thread& ppu)
 		SaveDataEntry entry    = save_entries[selected];
 		const std::string info = entry.title + "\n" + entry.subtitle + "\n" + entry.details;
 
-		// Get user confirmation
+		// Reusable display message string
 		std::string msg = "Do you really want to delete this entry?\n\n" + info;
+
+		// Yield before a blocking dialog is being spawned
+		lv2_obj::sleep(ppu);
+
+		// Get user confirmation by opening a blocking dialog
 		error_code res  = open_msg_dialog(true, CELL_MSGDIALOG_TYPE_SE_TYPE_NORMAL | CELL_MSGDIALOG_TYPE_BUTTON_TYPE_YESNO, vm::make_str(msg));
+
+		// Reschedule after a blocking dialog returns
+		if (ppu.check_state())
+		{
+			return 0;
+		}
 
 		if (res != CELL_OK)
 		{
@@ -217,23 +228,35 @@ static error_code select_and_delete(ppu_thread& ppu)
 				focused = -1;
 			}
 
-			// Display success message (return value should be irrelevant here)
+			// Update display message
 			msg = "Successfully removed entry!\n\n" + info;
 			cellSaveData.success("%s", msg);
+
+			// Yield before blocking dialog is being spawned
+			lv2_obj::sleep(ppu);
+
+			// Display success message by opening a blocking dialog (return value should be irrelevant here)
 			res = open_msg_dialog(true, CELL_MSGDIALOG_TYPE_SE_TYPE_NORMAL | CELL_MSGDIALOG_TYPE_BUTTON_TYPE_OK, vm::make_str(msg));
+
+			// Reschedule after blocking dialog returns
+			if (ppu.check_state())
+			{
+				return 0;
+			}
 		}
 	}
 
 	return CELL_CANCEL;
 }
 
-// Displays a savedata error message. error_code is not returned since the caller errored already.
-static void display_error_message(vm::ptr<CellSaveDataCBResult> result)
+// Displays a CellSaveDataCBResult error message.
+static error_code display_callback_result_error_message(ppu_thread& ppu, vm::ptr<CellSaveDataCBResult> result)
 {
 	if (!result)
-		return;
+		return CELL_SAVEDATA_ERROR_CBRESULT;
 
 	std::string msg;
+	bool use_invalid_message = false;
 
 	switch (result->result)
 	{
@@ -251,13 +274,25 @@ static void display_error_message(vm::ptr<CellSaveDataCBResult> result)
 		break;
 	case CELL_SAVEDATA_CBRESULT_ERR_INVALID:
 		if (result->invalidMsg)
-			error_code res = open_msg_dialog(true, CELL_MSGDIALOG_TYPE_SE_TYPE_NORMAL | CELL_MSGDIALOG_TYPE_BUTTON_TYPE_OK, result->invalidMsg);
-		return;
+			use_invalid_message = true;
+		break;
 	default:
-		return;
+		return CELL_SAVEDATA_ERROR_CBRESULT;
 	}
 
-	error_code res = open_msg_dialog(true, CELL_MSGDIALOG_TYPE_SE_TYPE_NORMAL | CELL_MSGDIALOG_TYPE_BUTTON_TYPE_OK, vm::make_str(msg));
+	// Yield before a blocking dialog is being spawned
+	lv2_obj::sleep(ppu);
+
+	// Get user confirmation by opening a blocking dialog (return value should be irrelevant here)
+	error_code res = open_msg_dialog(true, CELL_MSGDIALOG_TYPE_SE_TYPE_NORMAL | CELL_MSGDIALOG_TYPE_BUTTON_TYPE_OK, use_invalid_message ? result->invalidMsg : vm::make_str(msg));
+
+	// Reschedule after a blocking dialog returns
+	if (ppu.check_state())
+	{
+		return 0;
+	}
+
+	return CELL_SAVEDATA_ERROR_CBRESULT;
 }
 
 static std::string get_confirmation_message(u32 operation)
@@ -649,10 +684,9 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 			if (result->result < 0)
 			{
-				display_error_message(result);
-
 				cellSaveData.warning("savedata_op(): funcList returned result=%d.", result->result);
-				return CELL_SAVEDATA_ERROR_CBRESULT;
+
+				return display_callback_result_error_message(ppu, result);
 			}
 
 			// if the callback has returned ok, lets return OK.
@@ -792,10 +826,10 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 		while (funcList)
 		{
-			// Yield
+			// Yield before a blocking dialog is being spawned
 			lv2_obj::sleep(ppu);
 
-			// Display Save Data List asynchronously in the GUI thread.
+			// Display a blocking Save Data List asynchronously in the GUI thread.
 			if (auto save_dialog = Emu.GetCallbacks().get_save_dialog())
 			{
 				selected = save_dialog->ShowSaveDataList(save_entries, focused, operation, listSet);
@@ -805,7 +839,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 				selected = -2;
 			}
 
-			// Reschedule
+			// Reschedule after a blocking dialog returns
 			if (ppu.check_state())
 			{
 				return 0;
@@ -833,8 +867,17 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 				message = get_confirmation_message(operation) + "\n\n" + entry.title + "\n" + entry.subtitle + "\n" + entry.details;
 			}
 
-			// Get user confirmation
+			// Yield before a blocking dialog is being spawned
+			lv2_obj::sleep(ppu);
+
+			// Get user confirmation by opening a blocking dialog
 			error_code res = open_msg_dialog(true, CELL_MSGDIALOG_TYPE_SE_TYPE_NORMAL | CELL_MSGDIALOG_TYPE_BUTTON_TYPE_YESNO, vm::make_str(message));
+
+			// Reschedule after a blocking dialog returns
+			if (ppu.check_state())
+			{
+				return 0;
+			}
 
 			if (res != CELL_OK)
 			{
@@ -852,10 +895,9 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 				if (result->result < 0)
 				{
-					display_error_message(result);
-
 					cellSaveData.warning("savedata_op(): funcDone returned result=%d.", result->result);
-					return CELL_SAVEDATA_ERROR_CBRESULT;
+
+					return display_callback_result_error_message(ppu, result);
 				}
 
 				if (result->result == CELL_SAVEDATA_CBRESULT_OK_LAST || result->result == CELL_SAVEDATA_CBRESULT_OK_LAST_NOCONFIRM)
@@ -895,10 +937,9 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 			if (result->result < 0)
 			{
-				display_error_message(result);
-
 				cellSaveData.warning("savedata_op(): funcFixed returned result=%d.", result->result);
-				return CELL_SAVEDATA_ERROR_CBRESULT;
+
+				return display_callback_result_error_message(ppu, result);
 			}
 
 			if (!fixedSet->dirName)
@@ -918,6 +959,9 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 			if (fixedSet->option != CELL_SAVEDATA_OPTION_NOCONFIRM)
 			{
+				// Yield
+				lv2_obj::sleep(ppu);
+
 				std::string message;
 
 				if (selected == -1)
@@ -931,8 +975,17 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 					message = get_confirmation_message(operation) + "\n\n" + entry.title + "\n" + entry.subtitle + "\n" + entry.details;
 				}
 
-				// Get user confirmation
+				// Yield before a blocking dialog is being spawned
+				lv2_obj::sleep(ppu);
+
+				// Get user confirmation by opening a blocking dialog
 				error_code res = open_msg_dialog(true, CELL_MSGDIALOG_TYPE_SE_TYPE_NORMAL | CELL_MSGDIALOG_TYPE_BUTTON_TYPE_YESNO, vm::make_str(message));
+
+				// Reschedule after a blocking dialog returns
+				if (ppu.check_state())
+				{
+					return 0;
+				}
 
 				if (res != CELL_OK)
 				{
@@ -957,10 +1010,9 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 				if (result->result < 0)
 				{
-					display_error_message(result);
-
 					cellSaveData.warning("savedata_op(): funcDone_ returned result=%d.", result->result);
-					return CELL_SAVEDATA_ERROR_CBRESULT;
+
+					return display_callback_result_error_message(ppu, result);
 				}
 
 				return CELL_OK;
@@ -1139,9 +1191,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 			if (result->result < CELL_SAVEDATA_CBRESULT_OK_NEXT)
 			{
-				display_error_message(result);
-
-				return CELL_SAVEDATA_ERROR_CBRESULT;
+				return display_callback_result_error_message(ppu, result);
 			}
 
 			// Skip and return without error
@@ -1542,7 +1592,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 	if (savedata_result == CELL_SAVEDATA_ERROR_CBRESULT)
 	{
-		display_error_message(result);
+		return display_callback_result_error_message(ppu, result);
 	}
 
 	return savedata_result;

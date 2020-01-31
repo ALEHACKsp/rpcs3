@@ -94,7 +94,7 @@ void main_window::Init()
 	CreateConnects();
 
 	setMinimumSize(350, minimumSizeHint().height());    // seems fine on win 10
-	setWindowTitle(QString::fromStdString("RPCS3 " + rpcs3::version.to_string()));
+	setWindowTitle(QString::fromStdString("RPCS3 " + rpcs3::get_version().to_string()));
 
 	Q_EMIT RequestGlobalStylesheetChange(guiSettings->GetCurrentStylesheetPath());
 	ConfigureGuiFromSettings(true);
@@ -242,7 +242,7 @@ void main_window::Boot(const std::string& path, const std::string& title_id, boo
 {
 	if (!Emu.IsStopped())
 	{
-		int result;
+		int result = QMessageBox::Yes;
 		guiSettings->ShowConfirmationBox(tr("Close Running Game?"),
 			tr("Booting another game will close the current game.\nDo you really want to boot another game?\n\nAny unsaved progress will be lost!\n"),
 			gui::ib_confirm_boot, &result, this);
@@ -397,6 +397,18 @@ void main_window::InstallPackages(QStringList file_paths, bool show_confirm)
 		}
 	}
 
+	if (!file_paths.isEmpty())
+	{
+		// Handle the actual installations with a timeout. Otherwise the source explorer instance is not usable during the following file processing.
+		QTimer::singleShot(0, [this, file_paths]()
+		{
+			HandlePackageInstallation(file_paths);
+		});
+	}
+}
+
+void main_window::HandlePackageInstallation(QStringList file_paths)
+{
 	if (file_paths.isEmpty())
 	{
 		return;
@@ -490,24 +502,36 @@ void main_window::InstallPackages(QStringList file_paths, bool show_confirm)
 	}
 }
 
-void main_window::InstallPup(QString filePath)
+void main_window::InstallPup(QString file_path)
 {
-	if (filePath.isEmpty())
+	if (file_path.isEmpty())
 	{
 		QString path_last_PUP = guiSettings->GetValue(gui::fd_install_pup).toString();
-		filePath = QFileDialog::getOpenFileName(this, tr("Select PS3UPDAT.PUP To Install"), path_last_PUP, tr("PS3 update file (PS3UPDAT.PUP);;All pup files (*.pup);;All files (*.*)"));
+		file_path = QFileDialog::getOpenFileName(this, tr("Select PS3UPDAT.PUP To Install"), path_last_PUP, tr("PS3 update file (PS3UPDAT.PUP);;All pup files (*.pup);;All files (*.*)"));
 	}
 	else
 	{
-		if (QMessageBox::question(this, tr("RPCS3 Firmware Installer"), tr("Install firmware: %1?").arg(filePath),
+		if (QMessageBox::question(this, tr("RPCS3 Firmware Installer"), tr("Install firmware: %1?").arg(file_path),
 			QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
 		{
-			LOG_NOTICE(LOADER, "Firmware: Cancelled installation from drop. File: %s", sstr(filePath));
+			LOG_NOTICE(LOADER, "Firmware: Cancelled installation from drop. File: %s", sstr(file_path));
 			return;
 		}
 	}
 
-	if (filePath.isEmpty())
+	if (!file_path.isEmpty())
+	{
+		// Handle the actual installation with a timeout. Otherwise the source explorer instance is not usable during the following file processing.
+		QTimer::singleShot(0, [this, file_path]()
+		{
+			HandlePupInstallation(file_path);
+		});
+	}
+}
+
+void main_window::HandlePupInstallation(QString file_path)
+{
+	if (file_path.isEmpty())
 	{
 		return;
 	}
@@ -515,8 +539,8 @@ void main_window::InstallPup(QString filePath)
 	Emu.SetForceBoot(true);
 	Emu.Stop();
 
-	guiSettings->SetValue(gui::fd_install_pup, QFileInfo(filePath).path());
-	const std::string path = sstr(filePath);
+	guiSettings->SetValue(gui::fd_install_pup, QFileInfo(file_path).path());
+	const std::string path = sstr(file_path);
 
 	fs::file pup_f(path);
 	if (!pup_f)
@@ -1777,7 +1801,7 @@ void main_window::closeEvent(QCloseEvent* closeEvent)
 {
 	if (!Emu.IsStopped() && guiSettings->GetValue(gui::ib_confirm_exit).toBool())
 	{
-		int result;
+		int result = QMessageBox::Yes;
 
 		guiSettings->ShowConfirmationBox(tr("Exit RPCS3?"),
 			tr("A game is currently running. Do you really want to close RPCS3?\n\nAny unsaved progress will be lost!\n"),

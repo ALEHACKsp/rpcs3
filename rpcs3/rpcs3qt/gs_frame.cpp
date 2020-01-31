@@ -39,13 +39,13 @@ gs_frame::gs_frame(const QString& title, const QRect& geometry, const QIcon& app
 	m_disable_mouse = gui_settings->GetValue(gui::gs_disableMouse).toBool();
 
 	// Get version by substringing VersionNumber-buildnumber-commithash to get just the part before the dash
-	std::string version = rpcs3::version.to_string();
+	std::string version = rpcs3::get_version().to_string();
 	version = version.substr(0 , version.find_last_of('-'));
 
 	// Add branch and commit hash to version on frame unless it's master.
 	if ((rpcs3::get_branch().compare("master") != 0) && (rpcs3::get_branch().compare("HEAD") != 0))
 	{
-		version = version + "-" + rpcs3::version.to_string().substr((rpcs3::version.to_string().find_last_of('-') + 1), 8) + "-" + rpcs3::get_branch();
+		version = version + "-" + rpcs3::get_version().to_string().substr((rpcs3::get_version().to_string().find_last_of('-') + 1), 8) + "-" + rpcs3::get_branch();
 	}
 
 	m_windowTitle += qstr(" | " + version);
@@ -456,14 +456,20 @@ bool gs_frame::event(QEvent* ev)
 				toggle_fullscreen();
 			}
 
-			int result;
+			int result = QMessageBox::Yes;
+			atomic_t<bool> called = false;
 
-			Emu.CallAfter([this, &result]()
+			Emu.CallAfter([this, &result, &called]()
 			{
 				m_gui_settings->ShowConfirmationBox(tr("Exit Game?"),
 					tr("Do you really want to exit the game?\n\nAny unsaved progress will be lost!\n"),
 					gui::ib_confirm_exit, &result, nullptr);
+
+				called = true;
+				called.notify_one();
 			});
+
+			called.wait(false);
 
 			if (result != QMessageBox::Yes)
 			{

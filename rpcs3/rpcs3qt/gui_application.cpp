@@ -18,6 +18,8 @@
 
 #include <clocale>
 
+LOG_CHANNEL(gui_log, "GUI");
+
 gui_application::gui_application(int& argc, char** argv) : QApplication(argc, argv)
 {
 }
@@ -32,6 +34,8 @@ gui_application::~gui_application()
 void gui_application::Init()
 {
 	setWindowIcon(QIcon(":/rpcs3.ico"));
+
+	LoadLanguage(QLocale(QLocale::English).name());
 
 	m_emu_settings.reset(new emu_settings());
 	m_gui_settings.reset(new gui_settings());
@@ -52,9 +56,6 @@ void gui_application::Init()
 	// Create connects to propagate events throughout Gui.
 	InitializeConnects();
 
-	// As per QT recommendations to avoid conflicts for POSIX functions
-	std::setlocale(LC_NUMERIC, "C");
-
 	if (m_main_window)
 	{
 		m_main_window->Init();
@@ -73,6 +74,46 @@ void gui_application::Init()
 		discord::initialize();
 	}
 #endif
+}
+
+void gui_application::SwitchTranslator(QTranslator& translator, const QString& filename)
+{
+	// remove the old translator
+	removeTranslator(&translator);
+
+	// load the new translator
+	if (translator.load(QLocale(QLocale::English), filename))
+	{
+		installTranslator(&translator);
+	}
+}
+
+void gui_application::LoadLanguage(const QString& language)
+{
+	if (m_language == language)
+	{
+		return;
+	}
+
+	m_language = language;
+
+	const QLocale locale = QLocale(language);
+	QLocale::setDefault(locale);
+
+	// Idk if this is overruled by the QLocale default, so I'll change it here just to be sure.
+	// As per QT recommendations to avoid conflicts for POSIX functions
+	std::setlocale(LC_NUMERIC, "C");
+
+	// TODO: implement once we decided to enable translations
+	//SwitchTranslator(m_translator, QString("TranslationExample''%1.qm").arg(language));
+	//SwitchTranslator(m_translator_qt, QString("qt_%1.qm").arg(language));
+
+	if (m_main_window)
+	{
+		m_main_window->RepaintGui();
+	}
+
+	gui_log.notice("Current language changed to %s (%s)", QLocale::languageToString(locale.language()).toStdString(), language.toStdString());
 }
 
 void gui_application::InitializeConnects()
@@ -201,7 +242,7 @@ void gui_application::InitializeCallbacks()
 			case 0: static_cast<gs_frame*>(m_game_window)->progress_reset(value); break;
 			case 1: static_cast<gs_frame*>(m_game_window)->progress_increment(value); break;
 			case 2: static_cast<gs_frame*>(m_game_window)->progress_set_limit(value); break;
-			default: LOG_FATAL(GENERAL, "Unknown type in handle_taskbar_progress(type=%d, value=%d)", type, value); break;
+			default: gui_log.fatal("Unknown type in handle_taskbar_progress(type=%d, value=%d)", type, value); break;
 			}
 		}
 	};
@@ -235,7 +276,7 @@ void gui_application::StopPlaytime()
 
 	const qint64 playtime = m_persistent_settings->GetPlaytime(serial) + m_timer_playtime.elapsed();
 	m_persistent_settings->SetPlaytime(serial, playtime);
-	m_persistent_settings->SetLastPlayed(serial, QDate::currentDate().toString("MMMM d yyyy"));
+	m_persistent_settings->SetLastPlayed(serial, QDate::currentDate().toString(gui::persistent::last_played_date_format));
 	m_timer_playtime.invalidate();
 }
 

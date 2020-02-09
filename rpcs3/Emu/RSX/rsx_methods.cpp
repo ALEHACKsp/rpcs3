@@ -71,7 +71,7 @@ namespace rsx
 		void semaphore_acquire(thread* rsx, u32 /*_reg*/, u32 arg)
 		{
 			rsx->sync_point_request = true;
-			const u32 addr = get_address(method_registers.semaphore_offset_406e(), method_registers.semaphore_context_dma_406e());
+			const u32 addr = get_address(method_registers.semaphore_offset_406e(), method_registers.semaphore_context_dma_406e(), HERE);
 
 			const auto& sema = vm::_ref<atomic_be_t<u32>>(addr);
 
@@ -146,7 +146,7 @@ namespace rsx
 				rsx->sync_point_request = true;
 			}
 
-			const u32 addr = get_address(offset, ctxt);
+			const u32 addr = get_address(offset, ctxt, HERE);
 
 			if (g_use_rtm) [[likely]]
 			{
@@ -227,7 +227,7 @@ namespace rsx
 			// lle-gcm likes to inject system reserved semaphores, presumably for system/vsh usage
 			// Avoid calling render to avoid any havoc(flickering) they may cause from invalid flush/write
 			const u32 offset = method_registers.semaphore_offset_4097() & -16;
-			vm::_ref<atomic_t<RsxSemaphore>>(get_address(offset, method_registers.semaphore_context_dma_4097())).store(
+			vm::_ref<atomic_t<RsxSemaphore>>(get_address(offset, method_registers.semaphore_context_dma_4097(), HERE)).store(
 			{
 				arg,
 				0,
@@ -243,7 +243,7 @@ namespace rsx
 
 			const u32 offset = method_registers.semaphore_offset_4097() & -16;
 			const u32 val = (arg & 0xff00ff00) | ((arg & 0xff) << 16) | ((arg >> 16) & 0xff);
-			vm::_ref<atomic_t<RsxSemaphore>>(get_address(offset, method_registers.semaphore_context_dma_4097())).store(
+			vm::_ref<atomic_t<RsxSemaphore>>(get_address(offset, method_registers.semaphore_context_dma_4097(), HERE)).store(
 			{
 				val,
 				0,
@@ -545,7 +545,7 @@ namespace rsx
 				return vm::addr_t(0);
 			}
 
-			return vm::cast(get_address(offset, location));
+			return vm::cast(get_address(offset, location, HERE));
 		}
 
 		void get_report(thread* rsx, u32 _reg, u32 arg)
@@ -686,11 +686,12 @@ namespace rsx
 				rsx->m_rtts_dirty = true;
 		}
 
-		void set_ROP_state_dirty_bit(thread* rsx, u32, u32 arg)
+		template <u32 RsxFlags>
+		void notify_state_changed(thread* rsx, u32, u32 arg)
 		{
 			if (arg != method_registers.register_previous_value)
 			{
-				rsx->m_graphics_state |= rsx::fragment_state_dirty;
+				rsx->m_graphics_state |= RsxFlags;
 			}
 		}
 
@@ -719,30 +720,6 @@ namespace rsx
 
 				// Insert base mofifier barrier
 				method_registers.current_draw_clause.insert_command_barrier(index_base_modifier_barrier, arg);
-			}
-		}
-
-		void set_vertex_env_dirty_bit(thread* rsx, u32, u32 arg)
-		{
-			if (arg != method_registers.register_previous_value)
-			{
-				rsx->m_graphics_state |= rsx::pipeline_state::vertex_state_dirty;
-			}
-		}
-
-		void set_fragment_env_dirty_bit(thread* rsx, u32, u32 arg)
-		{
-			if (arg != method_registers.register_previous_value)
-			{
-				rsx->m_graphics_state |= rsx::pipeline_state::fragment_state_dirty;
-			}
-		}
-
-		void set_scissor_dirty_bit(thread* rsx, u32 reg, u32 arg)
-		{
-			if (arg != method_registers.register_previous_value)
-			{
-				rsx->m_graphics_state |= rsx::pipeline_state::scissor_config_state_dirty;
 			}
 		}
 
@@ -846,7 +823,7 @@ namespace rsx
 				const u16 x = method_registers.nv308a_x();
 				const u16 y = method_registers.nv308a_y();
 				const u32 pixel_offset = (method_registers.blit_engine_output_pitch_nv3062() * y) + (x * write_len);
-				u32 address = get_address(method_registers.blit_engine_output_offset_nv3062() + pixel_offset + (index * write_len), method_registers.blit_engine_output_location_nv3062());
+				u32 address = get_address(method_registers.blit_engine_output_offset_nv3062() + pixel_offset + (index * write_len), method_registers.blit_engine_output_location_nv3062(), HERE);
 
 				switch (write_len)
 				{
@@ -997,8 +974,8 @@ namespace rsx
 			const u32 in_offset = in_x * in_bpp + in_pitch * in_y;
 			const u32 out_offset = out_x * out_bpp + out_pitch * out_y;
 
-			const u32 src_address = get_address(src_offset, src_dma);
-			const u32 dst_address = get_address(dst_offset, dst_dma);
+			const u32 src_address = get_address(src_offset, src_dma, HERE);
+			const u32 dst_address = get_address(dst_offset, dst_dma, HERE);
 
 			const u32 src_line_length = (in_w * in_bpp);
 			if (is_block_transfer && (clip_h == 1 || (in_pitch == out_pitch && src_line_length == in_pitch)))
@@ -1353,8 +1330,8 @@ namespace rsx
 			u32 dst_dma = method_registers.nv0039_output_location();
 
 			const bool is_block_transfer = (in_pitch == out_pitch && out_pitch == line_length);
-			const auto read_address = get_address(src_offset, src_dma);
-			const auto write_address = get_address(dst_offset, dst_dma);
+			const auto read_address = get_address(src_offset, src_dma, HERE);
+			const auto write_address = get_address(dst_offset, dst_dma, HERE);
 			const auto data_length = in_pitch * (line_count - 1) + line_length;
 
 			if (const auto result = rsx->read_barrier(read_address, data_length, !is_block_transfer);
@@ -2974,22 +2951,23 @@ namespace rsx
 		bind<NV4097_SET_VERTEX_ATTRIB_OUTPUT_MASK, nv4097::set_vertex_attribute_output_mask>();
 		bind<NV4097_SET_VERTEX_DATA_BASE_OFFSET, nv4097::set_vertex_base_offset>();
 		bind<NV4097_SET_VERTEX_DATA_BASE_INDEX, nv4097::set_index_base_offset>();
-		bind<NV4097_SET_USER_CLIP_PLANE_CONTROL, nv4097::set_vertex_env_dirty_bit>();
-		bind<NV4097_SET_TRANSFORM_BRANCH_BITS, nv4097::set_vertex_env_dirty_bit>();
-		bind<NV4097_SET_CLIP_MIN, nv4097::set_vertex_env_dirty_bit>();
-		bind<NV4097_SET_CLIP_MAX, nv4097::set_vertex_env_dirty_bit>();
-		bind<NV4097_SET_ALPHA_FUNC, nv4097::set_ROP_state_dirty_bit>();
-		bind<NV4097_SET_ALPHA_REF, nv4097::set_ROP_state_dirty_bit>();
-		bind<NV4097_SET_ALPHA_TEST_ENABLE, nv4097::set_ROP_state_dirty_bit>();
-		bind<NV4097_SET_ANTI_ALIASING_CONTROL, nv4097::set_ROP_state_dirty_bit>();
-		bind<NV4097_SET_SHADER_PACKER, nv4097::set_ROP_state_dirty_bit>();
-		bind<NV4097_SET_SHADER_WINDOW, nv4097::set_ROP_state_dirty_bit>();
-		bind<NV4097_SET_FOG_MODE, nv4097::set_ROP_state_dirty_bit>();
-		bind<NV4097_SET_SCISSOR_HORIZONTAL, nv4097::set_scissor_dirty_bit>();
-		bind<NV4097_SET_SCISSOR_VERTICAL, nv4097::set_scissor_dirty_bit>();
-		bind<NV4097_SET_VIEWPORT_HORIZONTAL, nv4097::set_scissor_dirty_bit>();
-		bind<NV4097_SET_VIEWPORT_VERTICAL, nv4097::set_scissor_dirty_bit>();
-		bind_array<NV4097_SET_FOG_PARAMS, 1, 2, nv4097::set_ROP_state_dirty_bit>();
+		bind<NV4097_SET_USER_CLIP_PLANE_CONTROL, nv4097::notify_state_changed<vertex_state_dirty>>();
+		bind<NV4097_SET_TRANSFORM_BRANCH_BITS, nv4097::notify_state_changed<vertex_state_dirty>>();
+		bind<NV4097_SET_CLIP_MIN, nv4097::notify_state_changed<vertex_state_dirty>>();
+		bind<NV4097_SET_CLIP_MAX, nv4097::notify_state_changed<vertex_state_dirty>>();
+		bind<NV4097_SET_POINT_SIZE, nv4097::notify_state_changed<vertex_state_dirty>>();
+		bind<NV4097_SET_ALPHA_FUNC, nv4097::notify_state_changed<fragment_state_dirty>>();
+		bind<NV4097_SET_ALPHA_REF, nv4097::notify_state_changed<fragment_state_dirty>>();
+		bind<NV4097_SET_ALPHA_TEST_ENABLE, nv4097::notify_state_changed<fragment_state_dirty>>();
+		bind<NV4097_SET_ANTI_ALIASING_CONTROL, nv4097::notify_state_changed<fragment_state_dirty>>();
+		bind<NV4097_SET_SHADER_PACKER, nv4097::notify_state_changed<fragment_state_dirty>>();
+		bind<NV4097_SET_SHADER_WINDOW, nv4097::notify_state_changed<fragment_state_dirty>>();
+		bind<NV4097_SET_FOG_MODE, nv4097::notify_state_changed<fragment_state_dirty>>();
+		bind<NV4097_SET_SCISSOR_HORIZONTAL, nv4097::notify_state_changed<scissor_config_state_dirty>>();
+		bind<NV4097_SET_SCISSOR_VERTICAL, nv4097::notify_state_changed<scissor_config_state_dirty>>();
+		bind<NV4097_SET_VIEWPORT_HORIZONTAL, nv4097::notify_state_changed<scissor_config_state_dirty>>();
+		bind<NV4097_SET_VIEWPORT_VERTICAL, nv4097::notify_state_changed<scissor_config_state_dirty>>();
+		bind_array<NV4097_SET_FOG_PARAMS, 1, 2, nv4097::notify_state_changed<fragment_state_dirty>>();
 		bind_range<NV4097_SET_VIEWPORT_SCALE, 1, 3, nv4097::set_viewport_dirty_bit>();
 		bind_range<NV4097_SET_VIEWPORT_OFFSET, 1, 3, nv4097::set_viewport_dirty_bit>();
 		bind<NV4097_SET_INDEX_ARRAY_DMA, nv4097::check_index_array_dma>();

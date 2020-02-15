@@ -2342,7 +2342,7 @@ namespace rsx
 		}
 	}
 
-	u32 thread::get_fifo_cmd()
+	u32 thread::get_fifo_cmd() const
 	{
 		// Last fifo cmd for logging and utility
 		return fifo_ctrl->last_cmd();
@@ -3248,6 +3248,9 @@ namespace rsx
 				return result_none;
 
 			const auto memory_end = memory_address + memory_range;
+
+			AUDIT(memory_end >= memory_address);
+
 			u32 sync_address = 0;
 			occlusion_query_info* query = nullptr;
 

@@ -1307,11 +1307,11 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 		// Fill register access info
 		if (auto iflags = s_spu_iflag.decode(data))
 		{
-			if (iflags & spu_iflag::use_ra)
+			if (+iflags & +spu_iflag::use_ra)
 				m_use_ra[pos / 4] = op.ra;
-			if (iflags & spu_iflag::use_rb)
+			if (+iflags & +spu_iflag::use_rb)
 				m_use_rb[pos / 4] = op.rb;
-			if (iflags & spu_iflag::use_rc)
+			if (+iflags & +spu_iflag::use_rc)
 				m_use_rc[pos / 4] = op.rc;
 		}
 
@@ -7773,9 +7773,6 @@ public:
 			m_ir->CreateStore(&*(m_function->arg_begin() + 2), spu_ptr<u32>(&spu_thread::pc))->setVolatile(true);
 		else
 			update_pc();
-		const auto pstatus = spu_ptr<u32>(&spu_thread::status);
-		const auto chalt = m_ir->getInt32(SPU_STATUS_STOPPED_BY_HALT);
-		m_ir->CreateAtomicRMW(llvm::AtomicRMWInst::Or, pstatus, chalt, llvm::AtomicOrdering::Release)->setVolatile(true);
 		const auto ptr = _ptr<u32>(m_memptr, 0xffdead00);
 		m_ir->CreateStore(m_ir->getInt32("HALT"_u32), ptr)->setVolatile(true);
 		m_ir->CreateBr(next);

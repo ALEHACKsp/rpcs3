@@ -98,17 +98,26 @@ namespace rsx
 				if (Emu.IsStopped())
 					return;
 
+				// Wait for external pause events
+				if (rsx->external_interrupt_lock)
+				{
+					rsx->wait_pause();
+					continue;
+				}
+
 				if (const auto tdr = static_cast<u64>(g_cfg.video.driver_recovery_timeout))
 				{
 					if (Emu.IsPaused())
 					{
+						const u64 start0 = get_system_time();
+
 						while (Emu.IsPaused())
 						{
 							std::this_thread::sleep_for(1ms);
 						}
 
 						// Reset
-						start = get_system_time();
+						start += get_system_time() - start0;
 					}
 					else
 					{
@@ -208,7 +217,7 @@ namespace rsx
 
 			const u32 addr = rsx->iomap_table.get_addr(0xf100000 + (index * 0x40));
 
-			verify(HERE), addr != -1;
+			verify(HERE), addr != umax;
 
 			vm::_ref<atomic_t<RsxNotify>>(addr).store(
 			{
@@ -827,6 +836,8 @@ namespace rsx
 				const u32 pixel_offset = (method_registers.blit_engine_output_pitch_nv3062() * y) + (x * write_len);
 				u32 address = get_address(method_registers.blit_engine_output_offset_nv3062() + pixel_offset + (index * write_len), method_registers.blit_engine_output_location_nv3062(), HERE);
 
+				//auto res = vm::passive_lock(address, address + write_len);
+
 				switch (write_len)
 				{
 				case 4:
@@ -839,6 +850,7 @@ namespace rsx
 					fmt::throw_exception("Unreachable" HERE);
 				}
 
+				//res->release(0);
 				rsx->m_graphics_state |= rsx::pipeline_state::fragment_program_dirty;
 			}
 		};
@@ -980,6 +992,9 @@ namespace rsx
 			const u32 dst_address = get_address(dst_offset, dst_dma, HERE);
 
 			const u32 src_line_length = (in_w * in_bpp);
+
+			//auto res = vm::passive_lock(dst_address, dst_address + (in_pitch * (in_h - 1) + src_line_length));
+
 			if (is_block_transfer && (clip_h == 1 || (in_pitch == out_pitch && src_line_length == in_pitch)))
 			{
 				const u32 nb_lines = std::min(clip_h, in_h);
@@ -1331,7 +1346,7 @@ namespace rsx
 			u32 dst_offset = method_registers.nv0039_output_offset();
 			u32 dst_dma = method_registers.nv0039_output_location();
 
-			const bool is_block_transfer = (in_pitch == out_pitch && out_pitch == line_length);
+			const bool is_block_transfer = (in_pitch == out_pitch && out_pitch + 0u == line_length);
 			const auto read_address = get_address(src_offset, src_dma, HERE);
 			const auto write_address = get_address(dst_offset, dst_dma, HERE);
 			const auto data_length = in_pitch * (line_count - 1) + line_length;
@@ -1346,6 +1361,8 @@ namespace rsx
 					return;
 				}
 			}
+
+			//auto res = vm::passive_lock(write_address, data_length + write_address);
 
 			u8 *dst = vm::_ptr<u8>(write_address);
 			const u8 *src = vm::_ptr<u8>(read_address);
@@ -1402,6 +1419,8 @@ namespace rsx
 					}
 				}
 			}
+
+			//res->release(0);
 		}
 	}
 

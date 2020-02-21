@@ -615,9 +615,7 @@ namespace rsx
 			// Wait for external pause events
 			if (external_interrupt_lock)
 			{
-				external_interrupt_ack.store(true);
-
-				while (external_interrupt_lock) _mm_pause();
+				wait_pause();
 			}
 
 			// Note a possible rollback address
@@ -1025,7 +1023,7 @@ namespace rsx
 
 		// NOTE: surface_target_a is index 1 but is not MRT since only one surface is active
 		bool color_write_enabled = false;
-		for (int i = 0; i < mrt_buffers.size(); ++i)
+		for (uint i = 0; i < mrt_buffers.size(); ++i)
 		{
 			if (rsx::method_registers.color_write_enabled(i))
 			{
@@ -2468,10 +2466,7 @@ namespace rsx
 	//Pause/cont wrappers for FIFO ctrl. Never call this from rsx thread itself!
 	void thread::pause()
 	{
-		while (external_interrupt_lock.exchange(true)) [[unlikely]]
-		{
-			_mm_pause();
-		}
+		external_interrupt_lock++;
 
 		while (!external_interrupt_ack)
 		{
@@ -2480,14 +2475,34 @@ namespace rsx
 
 			_mm_pause();
 		}
-
-		external_interrupt_ack.store(false);
 	}
 
 	void thread::unpause()
 	{
 		// TODO: Clean this shit up
-		external_interrupt_lock.store(false);
+		external_interrupt_lock--;
+	}
+
+	void thread::wait_pause()
+	{
+		do
+		{
+			if (g_cfg.video.multithreaded_rsx)
+			{
+				g_dma_manager.sync();
+			}
+
+			external_interrupt_ack.store(true);
+
+			while (external_interrupt_lock)
+			{
+				// TODO: Investigate non busy-spinning method
+				_mm_pause();
+			}
+
+			external_interrupt_ack.store(false);
+		}
+		while (external_interrupt_lock);
 	}
 
 	u32 thread::get_load()
@@ -3074,7 +3089,7 @@ namespace rsx
 
 			if (!sync_address)
 			{
-				if (hint || ptimer->async_tasks_pending >= max_safe_queue_depth)
+				if (hint || ptimer->async_tasks_pending + 0u >= max_safe_queue_depth)
 				{
 					// Prepare the whole queue for reading. This happens when zcull activity is disabled or queue is too long
 					for (auto It = m_pending_writes.rbegin(); It != m_pending_writes.rend(); ++It)
@@ -3438,7 +3453,7 @@ namespace rsx
 		void conditional_render_eval::eval_result(::rsx::thread* pthr)
 		{
 			vm::ptr<CellGcmReportData> result = vm::cast(eval_address);
-			const bool failed = (result->value == 0);
+			const bool failed = (result->value == 0u);
 			set_eval_result(pthr, failed);
 		}
 	}

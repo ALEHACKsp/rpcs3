@@ -3138,6 +3138,13 @@
              </widget>
             </item>
             <item>
+             <widget class="QCheckBox" name="accurateRSXAccess">
+              <property name="text">
+               <string>Accurate RSX reservation access</string>
+              </property>
+             </widget>
+            </item>
+            <item>
              <widget class="QCheckBox" name="hookStFunc">
               <property name="text">
                <string>Hook static functions</string>
@@ -3213,7 +3220,7 @@
    <item>
     <widget class="QDialogButtonBox" name="buttonBox">
      <property name="standardButtons">
-      <set>QDialogButtonBox::Close|QDialogButtonBox::Save</set>
+      <set>QDialogButtonBox::Apply|QDialogButtonBox::Close|QDialogButtonBox::Save</set>
      </property>
     </widget>
    </item>

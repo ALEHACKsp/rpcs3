@@ -29,6 +29,7 @@ else()
 	add_compile_options(-fno-strict-aliasing)
 
 	add_compile_options(-Werror=old-style-cast)
+	add_compile_options(-Werror=sign-compare)
 
 	#TODO Clean the code so these are removed
 	add_compile_options(-Wno-unused-variable)
@@ -38,7 +39,6 @@ else()
 	add_compile_options(-Wno-unused-function)
 	add_compile_options(-Wno-attributes)
 	add_compile_options(-Wno-comment)
-	add_compile_options(-Wno-sign-compare)
 
 	if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 		add_compile_options(-Wno-sometimes-uninitialized)
@@ -48,6 +48,9 @@ else()
 		add_compile_options(-Wno-pessimizing-move)
 		add_compile_options(-Wno-delete-non-virtual-dtor)
 		add_compile_options(-Wno-unused-command-line-argument)
+
+		# For spam warning: '_GNU_SOURCE' macro redefined
+		add_compile_options(-Wno-macro-redefined)
 	elseif(CMAKE_COMPILER_IS_GNUCXX)
 		add_compile_options(-Wno-maybe-uninitialized)
 		add_compile_options(-Wno-strict-aliasing)

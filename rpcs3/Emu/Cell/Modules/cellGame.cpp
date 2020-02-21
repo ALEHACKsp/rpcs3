@@ -220,7 +220,7 @@ error_code cellHddGameCheck(ppu_thread& ppu, u32 version, vm::cptr<char> dirName
 
 	funcStat(ppu, result, get, set);
 
-	if (result->result != CELL_HDDGAME_CBRESULT_OK && result->result != CELL_HDDGAME_CBRESULT_OK_CANCEL)
+	if (result->result != u32{CELL_HDDGAME_CBRESULT_OK} && result->result != u32{CELL_HDDGAME_CBRESULT_OK_CANCEL})
 	{
 		return CELL_HDDGAME_ERROR_CBRESULT;
 	}
@@ -364,7 +364,7 @@ error_code cellGameBootCheck(vm::ptr<u32> type, vm::ptr<u32> attributes, vm::ptr
 		size->sysSizeKB = 4;
 	}
 
-	if (*type == CELL_GAME_GAMETYPE_HDD && dirName)
+	if (*type == u32{CELL_GAME_GAMETYPE_HDD} && dirName)
 	{
 		strcpy_trunc(*dirName, Emu.GetTitleID());
 	}
@@ -533,7 +533,7 @@ error_code cellGameDataCheckCreate2(ppu_thread& ppu, u32 version, vm::cptr<char>
 
 	//older sdk. it might not care about game type.
 
-	if (version != CELL_GAMEDATA_VERSION_CURRENT || errDialog > 1)
+	if (version != CELL_GAMEDATA_VERSION_CURRENT || errDialog > 1 || !funcStat || sysutil_check_name_string(dirName.get_ptr(), 1, CELL_GAME_DIRNAME_SIZE) != 0)
 	{
 		return CELL_GAMEDATA_ERROR_PARAM;
 	}
@@ -545,8 +545,9 @@ error_code cellGameDataCheckCreate2(ppu_thread& ppu, u32 version, vm::cptr<char>
 	vm::var<CellGameDataCBResult> cbResult;
 	vm::var<CellGameDataStatGet>  cbGet;
 	vm::var<CellGameDataStatSet>  cbSet;
-	cbGet->isNewData = fs::is_dir(vfs::get(dir)) ? CELL_GAMEDATA_ISNEWDATA_NO : CELL_GAMEDATA_ISNEWDATA_YES;
 
+	const u32 new_data = fs::is_dir(vfs::get(dir)) ? CELL_GAMEDATA_ISNEWDATA_NO : CELL_GAMEDATA_ISNEWDATA_YES;
+	cbGet->isNewData = new_data;
 
 	// TODO: Use the free space of the computer's HDD where RPCS3 is being run.
 	cbGet->hddFreeSizeKB = 40 * 1024 * 1024 - 1; // Read explanation in cellHddGameCheck
@@ -576,10 +577,6 @@ error_code cellGameDataCheckCreate2(ppu_thread& ppu, u32 version, vm::cptr<char>
 		strcpy_trunc(cbGet->getParam.titleLang[i], psf::get_string(sfo, fmt::format("TITLE_%02d", i)));
 	}
 
-	vm::var<CellGameDataSystemFileParam> setParam;
-	*setParam = cbGet->getParam;
-	cbSet->setParam = setParam;
-
 	funcStat(ppu, cbResult, cbGet, cbSet);
 
 	switch (cbResult->result)
@@ -597,7 +594,7 @@ error_code cellGameDataCheckCreate2(ppu_thread& ppu, u32 version, vm::cptr<char>
 		const std::string usrdir = dir + "/USRDIR";
 		const std::string vusrdir = vfs::get(usrdir);
 
-		if (!fs::is_dir(vusrdir) && !fs::create_path(vusrdir))
+		if (new_data && !fs::create_path(vusrdir))
 		{
 			return {CELL_GAME_ERROR_ACCESS_ERROR, usrdir};
 		}
@@ -628,6 +625,10 @@ error_code cellGameDataCheckCreate2(ppu_thread& ppu, u32 version, vm::cptr<char>
 			}
 
 			psf::save_object(fs::file(vdir + "/PARAM.SFO", fs::rewrite), sfo);
+		}
+		else if (new_data)
+		{
+			return CELL_GAMEDATA_ERROR_PARAM;
 		}
 
 		return CELL_OK;
@@ -1045,16 +1046,18 @@ error_code cellDiscGameGetBootDiscInfo(vm::ptr<CellDiscGameSystemFileParam> getP
 	cellGame.warning("cellDiscGameGetBootDiscInfo(getParam=*0x%x)", getParam);
 
 	if (!getParam)
+	{
 		return CELL_DISCGAME_ERROR_PARAM;
+	}
+
+	// Always sets 0 at first dword
+	reinterpret_cast<nse_t<u32, 1>*>(getParam->titleId)[0] = 0;
 
 	// This is also called by non-disc games, see NPUB90029
-	const std::string dir = "/dev_bdvd/PS3_GAME"s;
+	static const std::string dir = "/dev_bdvd/PS3_GAME"s;
 
 	if (!fs::is_dir(vfs::get(dir)))
 	{
-		getParam->parentalLevel = 0;
-		strcpy_trunc(getParam->titleId, "0");
-
 		return CELL_DISCGAME_ERROR_NOT_DISCBOOT;
 	}
 

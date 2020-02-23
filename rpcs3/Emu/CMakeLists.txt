@@ -191,6 +191,7 @@ target_sources(rpcs3_emu PRIVATE
 	Cell/Modules/cellAtracMulti.cpp
 	Cell/Modules/cellAudio.cpp
 	Cell/Modules/cellAudioOut.cpp
+	Cell/Modules/cellAuthDialog.cpp
 	Cell/Modules/cellAvconfExt.cpp
 	Cell/Modules/cellBgdl.cpp
 	Cell/Modules/cellCamera.cpp
@@ -376,7 +377,7 @@ target_sources(rpcs3_emu PRIVATE
 	RSX/Null/NullGSRender.cpp
 	RSX/Overlays/overlay_animation.cpp
 	RSX/Overlays/overlay_edit_text.cpp
-	RSX/Overlays/overlay_font.cpp
+	RSX/Overlays/overlay_fonts.cpp
 	RSX/Overlays/overlay_list_view.cpp
 	RSX/Overlays/overlay_message_dialog.cpp
 	RSX/Overlays/overlay_osk.cpp

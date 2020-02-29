@@ -1740,8 +1740,10 @@ void thread_base::initialize(bool(*wait_cb)(const void*))
 
 	g_tls_log_prefix = []
 	{
-		return thread_ctrl::g_tls_this_thread->m_name.get();
+		return thread_ctrl::get_name_cached();
 	};
+
+	std::string name = thread_ctrl::get_name_cached();
 
 #ifdef _MSC_VER
 	struct THREADNAME_INFO
@@ -1753,11 +1755,11 @@ void thread_base::initialize(bool(*wait_cb)(const void*))
 	};
 
 	// Set thread name for VS debugger
-	if (IsDebuggerPresent())
+	if (IsDebuggerPresent()) [&]() NEVER_INLINE
 	{
 		THREADNAME_INFO info;
 		info.dwType = 0x1000;
-		info.szName = m_name.get().c_str();
+		info.szName = name.c_str();
 		info.dwThreadID = -1;
 		info.dwFlags = 0;
 
@@ -1768,17 +1770,19 @@ void thread_base::initialize(bool(*wait_cb)(const void*))
 		__except (EXCEPTION_EXECUTE_HANDLER)
 		{
 		}
-	}
+	}();
 #endif
 
 #if defined(__APPLE__)
-	pthread_setname_np(m_name.get().substr(0, 15).c_str());
+	name.resize(std::min<std::size_t>(15, name.size()));
+	pthread_setname_np(name.c_str());
 #elif defined(__DragonFly__) || defined(__FreeBSD__) || defined(__OpenBSD__)
-	pthread_set_name_np(pthread_self(), m_name.get().c_str());
+	pthread_set_name_np(pthread_self(), name.c_str());
 #elif defined(__NetBSD__)
-	pthread_setname_np(pthread_self(), "%s", const_cast<char*>(m_name.get().c_str()));
+	pthread_setname_np(pthread_self(), "%s", name.data());
 #elif !defined(_WIN32)
-	pthread_setname_np(pthread_self(), m_name.get().substr(0, 15).c_str());
+	name.resize(std::min<std::size_t>(15, name.size()));
+	pthread_setname_np(pthread_self(), name.c_str());
 #endif
 
 #ifdef __linux__
@@ -1816,34 +1820,49 @@ bool thread_base::finalize(int) noexcept
 	FILETIME ctime, etime, ktime, utime;
 	GetThreadTimes(GetCurrentThread(), &ctime, &etime, &ktime, &utime);
 	const u64 time = ((ktime.dwLowDateTime | (u64)ktime.dwHighDateTime << 32) + (utime.dwLowDateTime | (u64)utime.dwHighDateTime << 32)) * 100ull;
+	const u64 fsoft = 0;
+	const u64 fhard = 0;
+	const u64 ctxvol = 0;
+	const u64 ctxinv = 0;
 #elif defined(RUSAGE_THREAD)
 	const u64 cycles = 0; // Not supported
 	struct ::rusage stats{};
 	::getrusage(RUSAGE_THREAD, &stats);
 	const u64 time = (stats.ru_utime.tv_sec + stats.ru_stime.tv_sec) * 1000000000ull + (stats.ru_utime.tv_usec + stats.ru_stime.tv_usec) * 1000ull;
+	const u64 fsoft = stats.ru_minflt;
+	const u64 fhard = stats.ru_majflt;
+	const u64 ctxvol = stats.ru_nvcsw;
+	const u64 ctxinv = stats.ru_nivcsw;
 #else
 	const u64 cycles = 0;
 	const u64 time = 0;
+	const u64 fsoft = 0;
+	const u64 fhard = 0;
+	const u64 ctxvol = 0;
+	const u64 ctxinv = 0;
 #endif
 
 	g_tls_log_prefix = []
 	{
-		return thread_ctrl::g_tls_this_thread->m_name.get();
+		return thread_ctrl::get_name_cached();
 	};
 
-	sig_log.notice("Thread time: %fs (%fGc); Faults: %u [rsx:%u, spu:%u];",
+	sig_log.notice("Thread time: %fs (%fGc); Faults: %u [rsx:%u, spu:%u]; [soft:%u hard:%u]; Switches:[vol:%u unvol:%u]",
 		time / 1000000000.,
 		cycles / 1000000000.,
 		g_tls_fault_all,
 		g_tls_fault_rsx,
-		g_tls_fault_spu);
+		g_tls_fault_spu,
+		fsoft, fhard, ctxvol, ctxinv);
 
 	// Return true if need to delete thread object
-	const bool result = m_state.exchange(thread_state::finished) == thread_state::detached;
+	const bool ok = m_state.exchange(thread_state::finished) <= thread_state::aborting;
 
 	// Signal waiting threads
 	m_state.notify_all();
-	return result;
+
+	// No detached thread supported atm
+	return !ok;
 }
 
 void thread_base::finalize() noexcept
@@ -1918,8 +1937,27 @@ void thread_ctrl::_wait_for(u64 usec, bool alert /* true */)
 	}
 }
 
+std::string thread_ctrl::get_name_cached()
+{
+	auto _this = thread_ctrl::g_tls_this_thread;
+
+	if (!_this)
+	{
+		return {};
+	}
+
+	static thread_local stx::shared_cptr<std::string> name_cache;
+
+	if (!_this->m_tname.is_equal(name_cache)) [[unlikely]]
+	{
+		name_cache = _this->m_tname.load();
+	}
+
+	return *name_cache;
+}
+
 thread_base::thread_base(std::string_view name)
-	: m_name(name)
+	: m_tname(stx::shared_cptr<std::string>::make(name))
 {
 }
 

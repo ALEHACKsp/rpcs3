@@ -387,11 +387,6 @@ void cpu_thread::operator()()
 	g_cpu_suspend_lock.lock_unlock();
 }
 
-void cpu_thread::on_abort()
-{
-	state += cpu_flag::exit;
-}
-
 cpu_thread::~cpu_thread()
 {
 	vm::cleanup_unlock(*this);
@@ -517,7 +512,7 @@ void cpu_thread::notify()
 	}
 	else
 	{
-		fmt::throw_exception("Invalid cpu_thread type");
+		fmt::throw_exception("Invalid cpu_thread type" HERE);
 	}
 }
 
@@ -534,7 +529,24 @@ void cpu_thread::abort()
 	}
 	else
 	{
-		fmt::throw_exception("Invalid cpu_thread type");
+		fmt::throw_exception("Invalid cpu_thread type" HERE);
+	}
+}
+
+std::string cpu_thread::get_name() const
+{
+	// Downcast to correct type
+	if (id_type() == 1)
+	{
+		return thread_ctrl::get_name(*static_cast<const named_thread<ppu_thread>*>(this));
+	}
+	else if (id_type() == 2)
+	{
+		return thread_ctrl::get_name(*static_cast<const named_thread<spu_thread>*>(this));
+	}
+	else
+	{
+		fmt::throw_exception("Invalid cpu_thread type" HERE);
 	}
 }
 
@@ -629,9 +641,6 @@ void cpu_thread::stop_all() noexcept
 	{
 		std::this_thread::sleep_for(10ms);
 	}
-
-	// Workaround for remaining threads (TODO)
-	std::this_thread::sleep_for(1300ms);
 
 	sys_log.notice("All CPU threads have been stopped.");
 }

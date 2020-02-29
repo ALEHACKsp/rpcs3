@@ -42,7 +42,26 @@ void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 	if (jid == umax)
 	{
 		// Detach detached thread, id will be removed on cleanup
-		static_cast<named_thread<ppu_thread>&>(ppu) = thread_state::detached;
+		static thread_local struct cleanup_t
+		{
+			const u32 id;
+
+			cleanup_t(u32 id)
+				: id(id)
+			{
+			}
+
+			cleanup_t(const cleanup_t&) = delete;
+
+			~cleanup_t()
+			{
+				if (!idm::remove<named_thread<ppu_thread>>(id))
+				{
+					sys_ppu_thread.fatal("Failed to remove detached thread! (id=0x%x)", id);
+				}
+			}
+		}
+		to_cleanup(ppu.id);
 	}
 	else if (jid != 0)
 	{
@@ -385,7 +404,7 @@ error_code sys_ppu_thread_start(ppu_thread& ppu, u32 thread_id)
 		thread_ctrl::notify(*thread);
 
 		// Dirty hack for sound: confirm the creation of _mxr000 event queue
-		if (thread->ppu_name.get() == "_cellsurMixerMain"sv)
+		if (*thread->ppu_tname.load() == "_cellsurMixerMain"sv)
 		{
 			lv2_obj::sleep(ppu);
 
@@ -432,9 +451,12 @@ error_code sys_ppu_thread_rename(u32 thread_id, vm::cptr<char> name)
 	constexpr u32 max_size = 27; // max size including null terminator
 	const auto pname = name.get_ptr();
 
+	// Make valid name
+	auto _name = stx::shared_cptr<std::string>::make(pname, std::find(pname, pname + max_size, '\0'));
+
 	// thread_ctrl name is not changed (TODO)
-	const std::string res = thread->ppu_name.assign(pname, std::find(pname, pname + max_size, '\0'));
-	sys_ppu_thread.warning(u8"sys_ppu_thread_rename(): Thread renamed to “%s”", res);
+	sys_ppu_thread.warning(u8"sys_ppu_thread_rename(): Thread renamed to “%s”", *_name);
+	thread->ppu_tname.store(std::move(_name));
 	return CELL_OK;
 }
 

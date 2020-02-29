@@ -16,11 +16,9 @@ extern u64 get_guest_system_time();
 
 void lv2_timer_context::operator()()
 {
-	while (!Emu.IsStopped())
+	while (thread_ctrl::state() != thread_state::aborting)
 	{
-		const u32 _state = state;
-
-		if (_state == SYS_TIMER_STATE_RUN)
+		if (state == SYS_TIMER_STATE_RUN)
 		{
 			const u64 _now = get_guest_system_time();
 			const u64 next = expire;
@@ -42,28 +40,17 @@ void lv2_timer_context::operator()()
 				}
 
 				// Stop after oneshot
-				state.compare_and_swap_test(SYS_TIMER_STATE_RUN, SYS_TIMER_STATE_STOP);
+				state.release(SYS_TIMER_STATE_STOP);
 				continue;
 			}
 
 			// TODO: use single global dedicated thread for busy waiting, no timer threads
 			lv2_obj::wait_timeout(next - _now);
+			continue;
 		}
-		else if (_state == SYS_TIMER_STATE_STOP)
-		{
-			thread_ctrl::wait_for(10000);
-		}
-		else
-		{
-			break;
-		}
-	}
-}
 
-void lv2_timer_context::on_abort()
-{
-	// Signal thread using invalid state
-	state = -1;
+		thread_ctrl::wait_for(10000);
+	}
 }
 
 error_code sys_timer_create(ppu_thread& ppu, vm::ptr<u32> timer_id)
@@ -89,13 +76,12 @@ error_code sys_timer_destroy(ppu_thread& ppu, u32 timer_id)
 
 	const auto timer = idm::withdraw<lv2_obj, lv2_timer>(timer_id, [&](lv2_timer& timer) -> CellError
 	{
-		std::lock_guard lock(timer.mutex);
-
-		if (!timer.port.expired())
+		if (std::shared_lock lock(timer.mutex); !timer.port.expired())
 		{
 			return CELL_EISCONN;
 		}
 
+		timer = thread_state::aborting;
 		return {};
 	});
 

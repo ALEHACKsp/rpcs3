@@ -1085,8 +1085,15 @@ void ppu_load_exec(const ppu_exec_object& elf)
 			if (prog.bin.size() > size || prog.bin.size() != prog.p_filesz)
 				fmt::throw_exception("Invalid binary size (0x%llx, memsz=0x%x)", prog.bin.size(), size);
 
-			if (!vm::falloc(addr, size))
-				fmt::throw_exception("vm::falloc() failed (addr=0x%x, memsz=0x%x)", addr, size);
+			if (!vm::falloc(addr, size, vm::main))
+			{
+				ppu_loader.error("vm::falloc(vm::main) failed (addr=0x%x, memsz=0x%x)", addr, size); // TODO
+
+				if (!vm::falloc(addr, size))
+				{
+					fmt::throw_exception("vm::falloc() failed (addr=0x%x, memsz=0x%x)" HERE, addr, size);
+				}
+			}
 
 			// Copy segment data, hash it
 			std::memcpy(vm::base(addr), prog.bin.data(), prog.bin.size());
@@ -1528,7 +1535,7 @@ void ppu_load_exec(const ppu_exec_object& elf)
 	auto ppu = idm::make_ptr<named_thread<ppu_thread>>("PPU[0x1000000] Thread (main_thread)", p, "main_thread", primary_prio, 1);
 
 	// Write initial data (exitspawn)
-	if (Emu.data.size())
+	if (!Emu.data.empty())
 	{
 		std::memcpy(vm::base(ppu->stack_addr + ppu->stack_size - ::size32(Emu.data)), Emu.data.data(), Emu.data.size());
 		ppu->gpr[1] -= Emu.data.size();
@@ -1655,7 +1662,7 @@ std::shared_ptr<lv2_overlay> ppu_load_overlay(const ppu_exec_object& elf, const 
 			if (prog.bin.size() > size || prog.bin.size() != prog.p_filesz)
 				fmt::throw_exception("Invalid binary size (0x%llx, memsz=0x%x)", prog.bin.size(), size);
 
-			if (!vm::falloc(addr, size))
+			if (!vm::get(vm::any, 0x30000000)->falloc(addr, size))
 				fmt::throw_exception("vm::falloc() failed (addr=0x%x, memsz=0x%x)", addr, size);
 
 			// Copy segment data, hash it

@@ -12,7 +12,7 @@
 #include "Emu/Cell/lv2/sys_event.h"
 #include "Emu/Cell/Modules/cellGcmSys.h"
 #include "Overlays/overlay_perf_metrics.h"
-
+#include "Utilities/date_time.h"
 #include "Utilities/span.h"
 #include "Utilities/StrUtil.h"
 
@@ -39,8 +39,6 @@ extern thread_local std::string(*g_tls_log_prefix)();
 namespace rsx
 {
 	std::function<bool(u32 addr, bool is_writing)> g_access_violation_handler;
-
-	dma_manager g_dma_manager;
 
 	u32 get_address(u32 offset, u32 location, const char* from)
 	{
@@ -423,8 +421,7 @@ namespace rsx
 
 		element_push_buffer.clear();
 
-		if (zcull_ctrl->active)
-			zcull_ctrl->on_draw();
+		zcull_ctrl->on_draw();
 
 		if (capture_current_frame)
 		{
@@ -481,7 +478,7 @@ namespace rsx
 
 		rsx::overlays::reset_performance_overlay();
 
-		g_dma_manager.init();
+		g_fxo->get<rsx::dma_manager>()->init();
 		on_init_thread();
 
 		method_registers.init();
@@ -499,7 +496,7 @@ namespace rsx
 
 		vblank_count = 0;
 
-		thread_ctrl::spawn("VBlank Thread", [this]()
+		g_fxo->init<named_thread>("VBlank Thread", [this]()
 		{
 			// See sys_timer_usleep for details
 #ifdef __linux__
@@ -565,7 +562,7 @@ namespace rsx
 			}
 		});
 
-		thread_ctrl::spawn("RSX Decompiler Thread", [this]
+		g_fxo->init<named_thread>("RSX Decompiler Thread", [this]
 		{
 			if (g_cfg.video.disable_asynchronous_shader_compiler)
 			{
@@ -664,7 +661,7 @@ namespace rsx
 		capture_current_frame = false;
 
 		m_rsx_thread_exiting = true;
-		g_dma_manager.join();
+		g_fxo->get<rsx::dma_manager>()->join();
 	}
 
 	void thread::fill_scale_offset_data(void *buffer, bool flip_y) const
@@ -2091,7 +2088,7 @@ namespace rsx
 				const u32 data_size = range.second * block.attribute_stride;
 				const u32 vertex_base = range.first * block.attribute_stride;
 
-				g_dma_manager.copy(persistent, vm::_ptr<char>(block.real_offset_address) + vertex_base, data_size);
+				g_fxo->get<rsx::dma_manager>()->copy(persistent, vm::_ptr<char>(block.real_offset_address) + vertex_base, data_size);
 				persistent += data_size;
 			}
 		}
@@ -2123,8 +2120,6 @@ namespace rsx
 		if (g_cfg.video.disable_zcull_queries)
 			return;
 
-		bool testing_enabled = zcull_pixel_cnt_enabled || zcull_stats_enabled;
-
 		if (framebuffer_swap)
 		{
 			zcull_surface_active = false;
@@ -2149,7 +2144,7 @@ namespace rsx
 		}
 
 		zcull_ctrl->set_enabled(this, zcull_rendering_enabled);
-		zcull_ctrl->set_active(this, zcull_rendering_enabled && testing_enabled && zcull_surface_active);
+		zcull_ctrl->set_status(this, zcull_surface_active, zcull_pixel_cnt_enabled, zcull_stats_enabled);
 	}
 
 	void thread::clear_zcull_stats(u32 type)
@@ -2249,7 +2244,7 @@ namespace rsx
 		m_graphics_state |= rsx::pipeline_state::fragment_constants_dirty;
 
 		// DMA sync; if you need this, don't use MTRSX
-		// g_dma_manager.sync();
+		// g_fxo->get<rsx::dma_manager>()->sync();
 
 		//TODO: On sync every sub-unit should finish any pending tasks
 		//Might cause zcull lockup due to zombie 'unclaimed reports' which are not forcefully removed currently
@@ -2489,7 +2484,7 @@ namespace rsx
 		{
 			if (g_cfg.video.multithreaded_rsx)
 			{
-				g_dma_manager.sync();
+				g_fxo->get<rsx::dma_manager>()->sync();
 			}
 
 			external_interrupt_ack.store(true);
@@ -2564,12 +2559,6 @@ namespace rsx
 			frame_capture.reset();
 			Emu.Pause();
 		}
-
-		// Reset ZCULL ctrl
-		// NOTE: A semaphore release is part of RSX flip control and will handle ZCULL sync
-		// TODO: These routines belong in the state reset routines controlled by sys_rsx and cellGcmSetFlip
-		zcull_ctrl->set_active(this, false, true);
-		zcull_ctrl->clear(this);
 
 		// Save current state
 		m_queued_flip.stats = m_frame_stats;
@@ -2729,26 +2718,15 @@ namespace rsx
 		ZCULL_control::~ZCULL_control()
 		{}
 
-		void ZCULL_control::set_enabled(class ::rsx::thread* ptimer, bool state, bool flush_queue)
-		{
-			if (state != enabled)
-			{
-				enabled = state;
-
-				if (active && !enabled)
-					set_active(ptimer, false, flush_queue);
-			}
-		}
-
 		void ZCULL_control::set_active(class ::rsx::thread* ptimer, bool state, bool flush_queue)
 		{
-			if (state != active)
+			if (state != host_queries_active)
 			{
-				active = state;
+				host_queries_active = state;
 
 				if (state)
 				{
-					verify(HERE), enabled && m_current_task == nullptr;
+					verify(HERE), unit_enabled && m_current_task == nullptr;
 					allocate_new_query(ptimer);
 					begin_occlusion_query(m_current_task);
 				}
@@ -2776,6 +2754,59 @@ namespace rsx
 
 					m_current_task = nullptr;
 					update(ptimer, 0u, flush_queue);
+				}
+			}
+		}
+
+		void ZCULL_control::check_state(class ::rsx::thread* ptimer, bool flush_queue)
+		{
+			// NOTE: Only enable host queries if pixel count is active to save on resources
+			// Can optionally be enabled for either stats enabled or zpass enabled for accuracy
+			const bool data_stream_available = write_enabled && (zpass_count_enabled /*|| stats_enabled*/);
+			if (host_queries_active && !data_stream_available)
+			{
+				// Stop
+				set_active(ptimer, false, flush_queue);
+			}
+			else if (!host_queries_active && data_stream_available && unit_enabled)
+			{
+				// Start
+				set_active(ptimer, true, flush_queue);
+			}
+		}
+
+		void ZCULL_control::set_enabled(class ::rsx::thread* ptimer, bool state, bool flush_queue)
+		{
+			if (state != unit_enabled)
+			{
+				unit_enabled = state;
+				check_state(ptimer, flush_queue);
+			}
+		}
+
+		void ZCULL_control::set_status(class ::rsx::thread* ptimer, bool surface_active, bool zpass_active, bool zcull_stats_active, bool flush_queue)
+		{
+			write_enabled = surface_active;
+			zpass_count_enabled = zpass_active;
+			stats_enabled = zcull_stats_active;
+
+			check_state(ptimer, flush_queue);
+
+			// Disabled since only ZPASS is implemented right now
+			if (false) //(m_current_task && m_current_task->active)
+			{
+				// Data check
+				u32 expected_type = 0;
+				if (zpass_active) expected_type |= CELL_GCM_ZPASS_PIXEL_CNT;
+				if (zcull_stats_active) expected_type |= CELL_GCM_ZCULL_STATS;
+
+				if (m_current_task->data_type != expected_type) [[unlikely]]
+				{
+					rsx_log.error("ZCULL queue interrupted by data type change!");
+
+					// Stop+start the current setup
+					set_active(ptimer, false, false);
+					set_active(ptimer, true, false);
 				}
 			}
 		}
@@ -2856,12 +2887,18 @@ namespace rsx
 					m_current_task = m_free_occlusion_pool.top();
 					m_free_occlusion_pool.pop();
 
+					m_current_task->data_type = 0;
 					m_current_task->num_draws = 0;
 					m_current_task->result = 0;
 					m_current_task->active = true;
 					m_current_task->owned = false;
 					m_current_task->sync_tag = 0;
 					m_current_task->timestamp = 0;
+
+					// Flags determine what kind of payload is carried by queries in the 'report'
+					if (zpass_count_enabled) m_current_task->data_type |= CELL_GCM_ZPASS_PIXEL_CNT;
+					if (stats_enabled) m_current_task->data_type |= CELL_GCM_ZCULL_STATS;
+
 					return;
 				}
 
@@ -2989,7 +3026,7 @@ namespace rsx
 				u32 processed = 0;
 				const bool has_unclaimed = (m_pending_writes.back().sink == 0);
 
-				//Write all claimed reports unconditionally
+				// Write all claimed reports unconditionally
 				for (auto &writer : m_pending_writes)
 				{
 					if (!writer.sink)
@@ -3010,7 +3047,10 @@ namespace rsx
 							if (query->result)
 							{
 								result += query->result;
-								m_statistics_map[writer.counter_tag] = result;
+								if (query->data_type & CELL_GCM_ZPASS_PIXEL_CNT)
+								{
+									m_statistics_map[writer.counter_tag] += query->result;
+								}
 							}
 						}
 						else
@@ -3025,7 +3065,8 @@ namespace rsx
 					if (!writer.forwarder)
 					{
 						// No other queries in the chain, write result
-						write(&writer, ptimer->timestamp(), result);
+						const auto value = (writer.type == CELL_GCM_ZPASS_PIXEL_CNT) ? m_statistics_map[writer.counter_tag] : result;
+						write(&writer, ptimer->timestamp(), value);
 
 						if (query && query->sync_tag == ptimer->cond_render_ctrl.eval_sync_tag)
 						{
@@ -3172,7 +3213,10 @@ namespace rsx
 							if (query->result)
 							{
 								result += query->result;
-								m_statistics_map[writer.counter_tag] = result;
+								if (query->data_type & CELL_GCM_ZPASS_PIXEL_CNT)
+								{
+									m_statistics_map[writer.counter_tag] += query->result;
+								}
 							}
 						}
 						else
@@ -3192,7 +3236,10 @@ namespace rsx
 								if (query->result)
 								{
 									result += query->result;
-									m_statistics_map[writer.counter_tag] = result;
+									if (query->data_type & CELL_GCM_ZPASS_PIXEL_CNT)
+									{
+										m_statistics_map[writer.counter_tag] += query->result;
+									}
 								}
 							}
 							else
@@ -3213,11 +3260,11 @@ namespace rsx
 
 				stat_tag_to_remove = writer.counter_tag;
 
-				// only zpass supported right now
 				if (!writer.forwarder)
 				{
 					// No other queries in the chain, write result
-					write(&writer, ptimer->timestamp(), result);
+					const auto value = (writer.type == CELL_GCM_ZPASS_PIXEL_CNT) ? m_statistics_map[writer.counter_tag] : result;
+					write(&writer, ptimer->timestamp(), value);
 
 					if (query && query->sync_tag == ptimer->cond_render_ctrl.eval_sync_tag)
 					{

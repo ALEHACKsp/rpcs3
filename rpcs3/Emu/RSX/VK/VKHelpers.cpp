@@ -601,6 +601,11 @@ namespace vk
 		vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 	}
 
+	void insert_execution_barrier(VkCommandBuffer cmd, VkPipelineStageFlags src_stage, VkPipelineStageFlags dst_stage)
+	{
+		vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, nullptr, 0, nullptr, 0, nullptr);
+	}
+
 	void change_image_layout(VkCommandBuffer cmd, VkImage image, VkImageLayout current_layout, VkImageLayout new_layout, const VkImageSubresourceRange& range)
 	{
 		//Prepare an image to match the new layout..
@@ -897,12 +902,12 @@ namespace vk
 		}
 	}
 
-	VkResult wait_for_event(VkEvent event, u64 timeout)
+	VkResult wait_for_event(event* pEvent, u64 timeout)
 	{
 		u64 t = 0;
 		while (true)
 		{
-			switch (const auto status = vkGetEventStatus(*g_current_renderer, event))
+			switch (const auto status = pEvent->status())
 			{
 			case VK_EVENT_SET:
 				return VK_SUCCESS;

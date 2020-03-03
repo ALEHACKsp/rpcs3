@@ -1506,6 +1506,11 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context) no
 
 static LONG exception_handler(PEXCEPTION_POINTERS pExp) noexcept
 {
+	if (pExp->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT && IsDebuggerPresent())
+	{
+		return EXCEPTION_CONTINUE_SEARCH;
+	}
+
 	const u64 addr64 = pExp->ExceptionRecord->ExceptionInformation[1] - reinterpret_cast<u64>(vm::g_base_addr);
 	const u64 exec64 = (pExp->ExceptionRecord->ExceptionInformation[1] - reinterpret_cast<u64>(vm::g_exec_addr)) / 2;
 	const bool is_writing = pExp->ExceptionRecord->ExceptionInformation[0] != 0;
@@ -1525,6 +1530,7 @@ static LONG exception_handler(PEXCEPTION_POINTERS pExp) noexcept
 			return EXCEPTION_CONTINUE_EXECUTION;
 		}
 	}
+
 	return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -1561,6 +1567,9 @@ static LONG exception_filter(PEXCEPTION_POINTERS pExp) noexcept
 	// TODO: Report full thread name if not an emu thread
 
 	fmt::append(msg, "Thread id = %s.\n", std::this_thread::get_id());
+
+	sys_log.notice("Memory bases:\nvm::g_base_addr = %p\nvm::g_sudo_addr = %p\nvm::g_exec_addr = %p\nvm::g_stat_addr = %p\nvm::g_reservations = %p\n",
+	vm::g_base_addr, vm::g_sudo_addr, vm::g_exec_addr, vm::g_stat_addr, vm::g_reservations);
 
 	std::vector<HMODULE> modules;
 	for (DWORD size = 256; modules.size() != size; size /= sizeof(HMODULE))
@@ -1617,9 +1626,13 @@ static LONG exception_filter(PEXCEPTION_POINTERS pExp) noexcept
 
 	// TODO: print registers and the callstack
 
-	// Report fatal error
 	sys_log.fatal("\n%s", msg);
-	report_fatal_error(msg);
+
+	if (!IsDebuggerPresent())
+	{
+		report_fatal_error(msg);
+	}
+
 	return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -1682,7 +1695,10 @@ static void signal_handler(int sig, siginfo_t* info, void* uct) noexcept
 		sys_log.notice("\n%s", cpu->dump());
 	}
 
-	std::string msg = fmt::format("Segfault %s location %p at %p.", cause, info->si_addr, RIP(context));
+	sys_log.notice("Memory bases:\nvm::g_base_addr = %p\nvm::g_sudo_addr = %p\nvm::g_exec_addr = %p\nvm::g_stat_addr = %p\nvm::g_reservations = %p\n",
+	vm::g_base_addr, vm::g_sudo_addr, vm::g_exec_addr, vm::g_stat_addr, vm::g_reservations);
+
+	std::string msg = fmt::format("Segfault %s location %p at %p.\n", cause, info->si_addr, RIP(context));
 
 	if (thread_ctrl::get_current())
 	{

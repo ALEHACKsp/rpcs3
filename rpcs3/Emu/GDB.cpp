@@ -141,7 +141,7 @@ void gdb_thread::start_server()
 
 		if (getaddrinfo(bind_addr.c_str(), bind_port.c_str(), &hints, &info) == 0)
 		{
-			server_socket = socket(info->ai_family, info->ai_socktype, info->ai_protocol);
+			server_socket = static_cast<int>(socket(info->ai_family, info->ai_socktype, info->ai_protocol));
 
 			if (server_socket == -1)
 			{
@@ -173,7 +173,7 @@ void gdb_thread::start_server()
 	}
 
 	// Fallback to UNIX socket
-	server_socket = socket(AF_UNIX, SOCK_STREAM, 0);
+	server_socket = static_cast<int>(socket(AF_UNIX, SOCK_STREAM, 0));
 
 	if (server_socket == -1)
 	{
@@ -599,7 +599,7 @@ bool gdb_thread::cmd_write_register(gdb_cmd& cmd)
 	if (th->id_type() == 1) {
 		auto ppu = static_cast<named_thread<ppu_thread>*>(th.get());
 		size_t eq_pos = cmd.data.find('=');
-		if (eq_pos == std::string::npos) {
+		if (eq_pos == umax) {
 			GDB.warning("Wrong write_register cmd data '%s'.", cmd.data);
 			return send_cmd_ack("E02");
 		}
@@ -641,7 +641,7 @@ bool gdb_thread::cmd_write_memory(gdb_cmd& cmd)
 {
 	size_t s = cmd.data.find(',');
 	size_t s2 = cmd.data.find(':');
-	if ((s == std::string::npos) || (s2 == std::string::npos)) {
+	if ((s == umax) || (s2 == umax)) {
 		GDB.warning("Malformed write memory request received: '%s'.", cmd.data);
 		return send_cmd_ack("E01");
 	}
@@ -778,7 +778,7 @@ bool gdb_thread::cmd_set_breakpoint(gdb_cmd& cmd)
 	//software breakpoint
 	if (type == '0') {
 		u32 addr = INVALID_PTR;
-		if (cmd.data.find(';') != std::string::npos) {
+		if (cmd.data.find(';') != umax) {
 			GDB.warning("Received request to set breakpoint with condition, but they are not supported.");
 			return send_cmd_ack("E01");
 		}
@@ -848,7 +848,7 @@ void gdb_thread::operator()()
 	{
 		sockaddr_in client;
 		socklen_t client_len = sizeof(client);
-		client_socket = accept(server_socket, reinterpret_cast<struct sockaddr*>(&client), &client_len);
+		client_socket = static_cast<int>(accept(server_socket, reinterpret_cast<struct sockaddr*>(&client), &client_len));
 
 		if (client_socket == -1)
 		{

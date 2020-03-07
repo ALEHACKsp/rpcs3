@@ -3,6 +3,7 @@
 
 #include "Utilities/VirtualMemory.h"
 #include "Utilities/bin_patch.h"
+#include "Utilities/StrUtil.h"
 #include "Crypto/sha1.h"
 #include "Crypto/unself.h"
 #include "Loader/ELF.h"
@@ -942,10 +943,10 @@ std::shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object& elf, const std::stri
 		};
 
 		// Access library information (TODO)
-		const auto& lib_info = vm::cptr<ppu_prx_library_info>(vm::cast(prx->segs[0].addr + elf.progs[0].p_paddr - elf.progs[0].p_offset, HERE));
-		const auto& lib_name = std::string(lib_info->name);
+		const vm::cptr<ppu_prx_library_info> lib_info = vm::cast(prx->segs[0].addr + elf.progs[0].p_paddr - elf.progs[0].p_offset, HERE);
+		const std::string lib_name = lib_info->name;
 
-		std::memcpy(prx->module_info_name, lib_info->name, sizeof(prx->module_info_name));
+		strcpy_trunc(prx->module_info_name, lib_name);
 		prx->module_info_version[0] = lib_info->version[0];
 		prx->module_info_version[1] = lib_info->version[1];
 		prx->module_info_attributes = lib_info->attributes;
@@ -995,9 +996,10 @@ std::shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object& elf, const std::stri
 	if (Emu.IsReady() && g_fxo->get<ppu_module>()->segs.empty())
 	{
 		// Special loading mode
-		ppu_thread_params p{};
-		p.stack_addr = vm::cast(vm::alloc(0x100000, vm::stack, 4096));
-		p.stack_size = 0x100000;
+		ppu_thread_params p{
+		    .stack_addr = vm::cast(vm::alloc(0x100000, vm::stack, 4096)),
+		    .stack_size = 0x100000,
+		};
 
 		auto ppu = idm::make_ptr<named_thread<ppu_thread>>("PPU[0x1000000] Thread (test_thread)", p, "test_thread", 0);
 

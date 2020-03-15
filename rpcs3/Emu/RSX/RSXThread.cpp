@@ -28,8 +28,7 @@ class GSRender;
 
 #define CMD_DEBUG 0
 
-bool user_asked_for_frame_capture = false;
-bool capture_current_frame = false;
+std::atomic<bool> user_asked_for_frame_capture = false;
 rsx::frame_trace_data frame_debug;
 rsx::frame_capture_data frame_capture;
 
@@ -305,10 +304,12 @@ namespace rsx
 		};
 
 		m_rtts_dirty = true;
-		memset(m_textures_dirty, -1, sizeof(m_textures_dirty));
-		memset(m_vertex_textures_dirty, -1, sizeof(m_vertex_textures_dirty));
+		m_textures_dirty.fill(true);
+		m_vertex_textures_dirty.fill(true);
 
 		m_graphics_state = pipeline_state::all_dirty;
+
+		user_asked_for_frame_capture = false;
 
 		if (g_cfg.misc.use_native_interface && (g_cfg.video.renderer == video_renderer::opengl || g_cfg.video.renderer == video_renderer::vulkan))
 		{
@@ -442,7 +443,6 @@ namespace rsx
 
 	void thread::operator()()
 	{
-		try
 		{
 			// Wait for startup (TODO)
 			while (m_rsx_thread_exiting)
@@ -456,10 +456,6 @@ namespace rsx
 			}
 
 			on_task();
-		}
-		catch (const std::exception& e)
-		{
-			rsx_log.fatal("%s thrown: %s", typeid(e).name(), e.what());
 		}
 
 		on_exit();
@@ -655,9 +651,6 @@ namespace rsx
 		// Clear any pending flush requests to release threads
 		std::this_thread::sleep_for(10ms);
 		do_local_task(rsx::FIFO_state::lock_wait);
-
-		user_asked_for_frame_capture = false;
-		capture_current_frame = false;
 
 		m_rsx_thread_exiting = true;
 		g_fxo->get<rsx::dma_manager>()->join();
@@ -2524,10 +2517,9 @@ namespace rsx
 	void thread::on_frame_end(u32 buffer, bool forced)
 	{
 		// Marks the end of a frame scope GPU-side
-		if (user_asked_for_frame_capture && !capture_current_frame)
+		if (user_asked_for_frame_capture.exchange(false) && !capture_current_frame)
 		{
 			capture_current_frame = true;
-			user_asked_for_frame_capture = false;
 			frame_debug.reset();
 			frame_capture.reset();
 
@@ -2702,6 +2694,12 @@ namespace rsx
 		flip_status = CELL_GCM_DISPLAY_FLIP_STATUS_DONE;
 		m_queued_flip.in_progress = false;
 
+		if (!isHLE)
+		{
+			sys_rsx_context_attribute(0x55555555, 0xFEC, buffer, 0, 0, 0);
+			return;
+		}
+
 		if (flip_handler)
 		{
 			intr_thread->cmd_list
@@ -2713,8 +2711,6 @@ namespace rsx
 
 			thread_ctrl::notify(*intr_thread);
 		}
-
-		sys_rsx_context_attribute(0x55555555, 0xFEC, buffer, 0, 0, 0);
 	}
 
 

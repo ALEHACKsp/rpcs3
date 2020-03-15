@@ -3,6 +3,7 @@
 #include <deque>
 #include <variant>
 #include <stack>
+#include <atomic>
 
 #include "GCM.h"
 #include "rsx_cache.h"
@@ -26,8 +27,7 @@
 extern u64 get_guest_system_time();
 extern u64 get_system_time();
 
-extern bool user_asked_for_frame_capture;
-extern bool capture_current_frame;
+extern std::atomic<bool> user_asked_for_frame_capture;
 extern rsx::frame_trace_data frame_debug;
 extern rsx::frame_capture_data frame_capture;
 
@@ -674,8 +674,8 @@ namespace rsx
 		u32 local_mem_size{0};
 
 		bool m_rtts_dirty;
-		bool m_textures_dirty[16];
-		bool m_vertex_textures_dirty[4];
+		std::array<bool, 16> m_textures_dirty;
+		std::array<bool, 4> m_vertex_textures_dirty;
 		bool m_framebuffer_state_contested = false;
 		rsx::framebuffer_creation_context m_current_framebuffer_context = rsx::framebuffer_creation_context::context_draw;
 
@@ -717,6 +717,7 @@ namespace rsx
 		vm::ptr<void(u32)> user_handler = vm::null;
 		vm::ptr<void(u32)> vblank_handler = vm::null;
 		atomic_t<u64> vblank_count{0};
+		bool capture_current_frame = false;
 
 	public:
 		bool invalid_command_interrupt_raised = false;

@@ -537,7 +537,14 @@ VKGSRender::VKGSRender() : GSRender()
 	m_video_output_pass = std::make_unique<vk::video_out_calibration_pass>();
 	m_video_output_pass->create(*m_device);
 
-	m_prog_buffer = std::make_unique<VKProgramBuffer>();
+	m_prog_buffer = std::make_unique<VKProgramBuffer>
+	(
+		[this](const vk::pipeline_props& props, const RSXVertexProgram& vp, const RSXFragmentProgram& fp)
+		{
+			// Program was linked or queued for linking
+			m_shaders_cache->store(props, vp, fp);
+		}
+	);
 
 	if (g_cfg.video.disable_vertex_cache || g_cfg.video.multithreaded_rsx)
 		m_vertex_cache = std::make_unique<vk::null_vertex_cache>();
@@ -727,7 +734,7 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 		if (g_fxo->get<rsx::dma_manager>()->is_current_thread())
 		{
 			// The offloader thread cannot handle flush requests
-			verify(HERE), m_queue_status.load() == flush_queue_state::ok;
+			verify(HERE), !(m_queue_status & flush_queue_state::deadlock);
 
 			m_offloader_fault_range = g_fxo->get<rsx::dma_manager>()->get_fault_range(is_writing);
 			m_offloader_fault_cause = (is_writing) ? rsx::invalidation_cause::write : rsx::invalidation_cause::read;
@@ -2268,7 +2275,13 @@ void VKGSRender::do_local_task(rsx::FIFO_state state)
 		m_queue_status.clear(flush_queue_state::deadlock);
 	}
 
-	if (m_flush_requests.pending())
+	if (m_queue_status & flush_queue_state::flushing)
+	{
+		// Abort recursive CB submit requests.
+		// When flushing flag is already set, only deadlock events may be processed.
+		return;
+	}
+	else if (m_flush_requests.pending())
 	{
 		if (m_flush_queue_mutex.try_lock())
 		{
@@ -2473,18 +2486,12 @@ bool VKGSRender::load_program()
 	vertex_program.skip_vertex_input_check = true;
 	fragment_program.unnormalized_coords = 0;
 	m_program = m_prog_buffer->get_graphics_pipeline(vertex_program, fragment_program, properties,
-			!g_cfg.video.disable_asynchronous_shader_compiler, *m_device, pipeline_layout).get();
+			!g_cfg.video.disable_asynchronous_shader_compiler, true, *m_device, pipeline_layout).get();
 
 	vk::leave_uninterruptible();
 
 	if (m_prog_buffer->check_cache_missed())
 	{
-		if (m_prog_buffer->check_program_linked_flag())
-		{
-			// Program was linked or queued for linking
-			m_shaders_cache->store(properties, vertex_program, fragment_program);
-		}
-
 		// Notify the user with HUD notification
 		if (g_cfg.misc.show_shader_compilation_hint)
 		{
@@ -2671,6 +2678,8 @@ void VKGSRender::init_buffers(rsx::framebuffer_creation_context context, bool)
 
 void VKGSRender::close_and_submit_command_buffer(vk::fence* pFence, VkSemaphore wait_semaphore, VkSemaphore signal_semaphore, VkPipelineStageFlags pipeline_stage_flags)
 {
+	verify("Recursive calls to submit the current commandbuffer will cause a deadlock" HERE), !m_queue_status.test_and_set(flush_queue_state::flushing);
+
 	// Workaround for deadlock occuring during RSX offloader fault
 	// TODO: Restructure command submission infrastructure to avoid this condition
 	const bool sync_success = g_fxo->get<rsx::dma_manager>()->sync();
@@ -2742,6 +2751,8 @@ void VKGSRender::close_and_submit_command_buffer(vk::fence* pFence, VkSemaphore 
 	{
 		verify(HERE), m_current_command_buffer->submit_fence->flushed;
 	}
+
+	m_queue_status.clear(flush_queue_state::flushing);
 }
 
 void VKGSRender::open_command_buffer()

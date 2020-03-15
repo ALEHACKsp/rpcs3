@@ -60,21 +60,45 @@ void fmt_class_string<std::thread::id>::format(std::string& out, u64 arg)
 	out += ss.str();
 }
 
-[[noreturn]] void catch_all_exceptions()
+#ifndef _WIN32
+bool IsDebuggerPresent()
 {
-	try
+	char buf[4096];
+	fs::file status_fd("/proc/self/status");
+	if (!status_fd)
 	{
-		throw;
+		std::fprintf(stderr, "Failed to open /proc/self/status\n");
+		return false;
 	}
-	catch (const std::exception& e)
+
+	const auto num_read = status_fd.read(buf, sizeof(buf) - 1);
+	if (num_read == 0 || num_read == umax)
 	{
-		report_fatal_error("{" + g_tls_log_prefix() + "} Unhandled exception of type '"s + typeid(e).name() + "': "s + e.what());
+		std::fprintf(stderr, "Failed to read /proc/self/status (%d)\n", errno);
+		return false;
 	}
-	catch (...)
+
+	buf[num_read] = '\0';
+	std::string_view status = buf;
+
+	const auto found = status.find("TracerPid:");
+	if (found == umax)
 	{
-		report_fatal_error("{" + g_tls_log_prefix() + "} Unhandled exception (unknown)");
+		std::fprintf(stderr, "Failed to find 'TracerPid:' in /proc/self/status\n");
+		return false;
 	}
+
+	for (const char* cp = status.data() + found + 10; cp <= status.data() + num_read; ++cp)
+	{
+		if (!std::isspace(*cp))
+		{
+			return std::isdigit(*cp) != 0 && *cp != '0';
+		}
+	}
+
+	return false;
 }
+#endif
 
 enum x64_reg_t : u32
 {
@@ -1111,33 +1135,12 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context) no
 
 	if (rsx::g_access_violation_handler)
 	{
-		bool handled = false;
-
-		try
+		if (cpu)
 		{
-			if (cpu)
-			{
-				vm::temporary_unlock(*cpu);
-			}
-
-			handled = rsx::g_access_violation_handler(addr, is_writing);
+			vm::temporary_unlock(*cpu);
 		}
-		catch (const std::exception& e)
-		{
-			rsx_log.fatal("g_access_violation_handler(0x%x, %d): %s", addr, is_writing, e.what());
 
-			if (cpu)
-			{
-				cpu->state += cpu_flag::dbg_pause;
-
-				if (cpu->test_stopped())
-				{
-					std::terminate();
-				}
-			}
-
-			return false;
-		}
+		bool handled = rsx::g_access_violation_handler(addr, is_writing);
 
 		if (handled)
 		{
@@ -1449,7 +1452,7 @@ bool handle_access_violation(u32 addr, bool is_writing, x64_context* context) no
 			if (!access_violation_recovered)
 			{
 				vm_log.notice("\n%s", cpu->dump());
-				vm_log.fatal("Access violation %s location 0x%x (%s)", is_writing ? "writing" : "reading", addr, (is_writing && vm::check_addr(addr)) ? "read-only memory" : "unmapped memory");
+				vm_log.error("Access violation %s location 0x%x (%s)", is_writing ? "writing" : "reading", addr, (is_writing && vm::check_addr(addr)) ? "read-only memory" : "unmapped memory");
 			}
 
 			// TODO:
@@ -1567,9 +1570,6 @@ static LONG exception_filter(PEXCEPTION_POINTERS pExp) noexcept
 	// TODO: Report full thread name if not an emu thread
 
 	fmt::append(msg, "Thread id = %s.\n", std::this_thread::get_id());
-
-	sys_log.notice("Memory bases:\nvm::g_base_addr = %p\nvm::g_sudo_addr = %p\nvm::g_exec_addr = %p\nvm::g_stat_addr = %p\nvm::g_reservations = %p\n",
-	vm::g_base_addr, vm::g_sudo_addr, vm::g_exec_addr, vm::g_stat_addr, vm::g_reservations);
 
 	std::vector<HMODULE> modules;
 	for (DWORD size = 256; modules.size() != size; size /= sizeof(HMODULE))
@@ -1695,9 +1695,6 @@ static void signal_handler(int sig, siginfo_t* info, void* uct) noexcept
 		sys_log.notice("\n%s", cpu->dump());
 	}
 
-	sys_log.notice("Memory bases:\nvm::g_base_addr = %p\nvm::g_sudo_addr = %p\nvm::g_exec_addr = %p\nvm::g_stat_addr = %p\nvm::g_reservations = %p\n",
-	vm::g_base_addr, vm::g_sudo_addr, vm::g_exec_addr, vm::g_stat_addr, vm::g_reservations);
-
 	std::string msg = fmt::format("Segfault %s location %p at %p.\n", cause, info->si_addr, RIP(context));
 
 	if (thread_ctrl::get_current())
@@ -1709,8 +1706,14 @@ static void signal_handler(int sig, siginfo_t* info, void* uct) noexcept
 
 	fmt::append(msg, "Thread id = %s.\n", std::this_thread::get_id());
 
-	// TODO (debugger interaction)
 	sys_log.fatal("\n%s", msg);
+	std::fprintf(stderr, "%s\n", msg.c_str());
+
+	if (IsDebuggerPresent())
+	{
+		__asm("int3;");
+	}
+
 	report_fatal_error(msg);
 }
 
@@ -1723,14 +1726,32 @@ const bool s_exception_handler_set = []() -> bool
 
 	if (::sigaction(SIGSEGV, &sa, NULL) == -1)
 	{
-		std::printf("sigaction(SIGSEGV) failed (0x%x).", errno);
+		std::fprintf(stderr, "sigaction(SIGSEGV) failed (%d).\n", errno);
 		std::abort();
 	}
 
+	std::printf("Debugger: %d\n", +IsDebuggerPresent());
 	return true;
 }();
 
 #endif
+
+const bool s_terminate_handler_set = []() -> bool
+{
+	std::set_terminate([]()
+	{
+		if (IsDebuggerPresent())
+#ifdef _MSC_VER
+			__debugbreak();
+#else
+			__asm("int3;");
+#endif
+
+		report_fatal_error("RPCS3 has abnormally terminated.");
+	});
+
+	return true;
+}();
 
 thread_local DECLARE(thread_ctrl::g_tls_this_thread) = nullptr;
 
@@ -1865,6 +1886,7 @@ bool thread_base::finalize(int) noexcept
 
 void thread_base::finalize() noexcept
 {
+	atomic_storage_futex::set_wait_callback([](const void*){ return true; });
 	g_tls_log_prefix = []() -> std::string { return {}; };
 	thread_ctrl::g_tls_this_thread = nullptr;
 }
@@ -2022,6 +2044,21 @@ void thread_ctrl::emergency_exit(std::string_view reason)
 {
 	sig_log.fatal("Thread terminated due to fatal error: %s", reason);
 
+	std::fprintf(stderr, "Thread '%s' terminated due to fatal error: %s\n", g_tls_log_prefix().c_str(), std::string(reason).c_str());
+
+#ifdef _WIN32
+	if (IsDebuggerPresent())
+	{
+		OutputDebugStringA(fmt::format("Thread '%s' terminated due to fatal error: %s\n", g_tls_log_prefix(), reason).c_str());
+		__debugbreak();
+	}
+#else
+	if (IsDebuggerPresent())
+	{
+		__asm("int3;");
+	}
+#endif
+
 	if (const auto _this = g_tls_this_thread)
 	{
 		if (_this->finalize(0))
@@ -2029,7 +2066,6 @@ void thread_ctrl::emergency_exit(std::string_view reason)
 			delete _this;
 		}
 
-		// Do some not very useful cleanup
 		thread_base::finalize();
 
 #ifdef _WIN32

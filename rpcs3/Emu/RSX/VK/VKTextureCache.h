@@ -98,7 +98,7 @@ namespace vk
 
 		void destroy()
 		{
-			if (!exists())
+			if (!exists() && context != rsx::texture_upload_context::dma)
 				return;
 
 			m_tex_cache->on_section_destroyed(*this);
@@ -485,8 +485,7 @@ namespace vk
 		{
 			if (tex.is_managed())
 			{
-				m_temporary_memory_size += tex.get_section_size();
-				m_temporary_storage.emplace_back(tex);
+				vk::get_resource_manager()->dispose(tex.get_texture());
 			}
 		}
 

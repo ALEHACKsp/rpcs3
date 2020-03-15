@@ -772,7 +772,7 @@ namespace rsx
 	}
 
 	template <int N>
-	void unpack_bitset(std::bitset<N>& block, u64* values)
+	void unpack_bitset(const std::bitset<N>& block, u64* values)
 	{
 		constexpr int count = N / 64;
 		for (int n = 0; n < count; ++n)
@@ -848,6 +848,12 @@ namespace rsx
 			m_data.fetch_or(static_cast<bitmask_type>(mask));
 		}
 
+		bool test_and_set(T mask)
+		{
+			const auto old = m_data.fetch_or(static_cast<bitmask_type>(mask));
+			return (old & static_cast<bitmask_type>(mask)) != 0;
+		}
+
 		auto clear(T mask)
 		{
 			bitmask_type clear_mask = ~(static_cast<bitmask_type>(mask));
@@ -893,7 +899,7 @@ namespace rsx
 
 		simple_array(const std::initializer_list<Ty>& args)
 		{
-			reserve(args.size());
+			reserve(::size32(args));
 
 			for (const auto& arg : args)
 			{

@@ -1,7 +1,9 @@
 ﻿#include "stdafx.h"
 #include "update_manager.h"
 #include "progress_dialog.h"
+#include "localized.h"
 #include "rpcs3_version.h"
+#include "curl_handle.h"
 #include "Utilities/StrUtil.h"
 #include "Crypto/sha256.h"
 #include "Emu/System.h"
@@ -31,11 +33,6 @@
 #include <sys/stat.h>
 #endif
 
-#ifndef CURL_STATICLIB
-#define CURL_STATICLIB
-#endif
-#include <curl/curl.h>
-
 LOG_CHANNEL(update_log, "UPDATER");
 
 size_t curl_write_cb(char* ptr, size_t /*size*/, size_t nmemb, void* userdata)
@@ -46,12 +43,7 @@ size_t curl_write_cb(char* ptr, size_t /*size*/, size_t nmemb, void* userdata)
 
 update_manager::update_manager()
 {
-	m_curl = curl_easy_init();
-
-#ifdef _WIN32
-	// This shouldn't be needed on linux
-	curl_easy_setopt(m_curl, CURLOPT_CAINFO, "cacert.pem");
-#endif
+	m_curl = new curl_handle(this);
 
 	// We need this signal in order to update the GUI from the main thread
 	connect(this, &update_manager::signal_buffer_update, this, &update_manager::handle_buffer_update);
@@ -106,14 +98,14 @@ void update_manager::check_for_updates(bool automatic, QWidget* parent)
 	connect(m_progress_dialog, &QProgressDialog::canceled, [this]() { m_curl_abort = true; });
 	connect(m_progress_dialog, &QProgressDialog::finished, m_progress_dialog, &QProgressDialog::deleteLater);
 
-	const std::string request_url = m_update_url + rpcs3::get_commit_and_hash().second;
-	curl_easy_setopt(m_curl, CURLOPT_URL, request_url.c_str());
-	curl_easy_setopt(m_curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-	curl_easy_setopt(m_curl, CURLOPT_WRITEDATA, this);
+	const std::string request_url = "https://update.rpcs3.net/?api=v1&c=" + rpcs3::get_commit_and_hash().second;
+	curl_easy_setopt(m_curl->get_curl(), CURLOPT_URL, request_url.c_str());
+	curl_easy_setopt(m_curl->get_curl(), CURLOPT_WRITEFUNCTION, curl_write_cb);
+	curl_easy_setopt(m_curl->get_curl(), CURLOPT_WRITEDATA, this);
 
 	auto thread = QThread::create([this]
 	{
-		const auto curl_result = curl_easy_perform(m_curl);
+		const auto curl_result = curl_easy_perform(m_curl->get_curl());
 		m_curl_result = curl_result == CURLE_OK;
 
 		if (!m_curl_result)
@@ -178,7 +170,9 @@ bool update_manager::handle_json(bool automatic)
 		}
 	}
 
+	const auto& current = json_data["current_build"];
 	const auto& latest = json_data["latest_build"];
+
 	if (!latest.isObject())
 	{
 		update_log.error("JSON doesn't contain latest_build section");
@@ -199,7 +193,7 @@ bool update_manager::handle_json(bool automatic)
 	// Check that every bit of info we need is there
 	if (!latest[os].isObject() || !latest[os]["download"].isString() || !latest[os]["size"].isDouble() || !latest[os]["checksum"].isString() || !latest["version"].isString() ||
 	    !latest["datetime"].isString() ||
-	    (hash_found && (!json_data["current_build"].isObject() || !json_data["current_build"]["version"].isString() || !json_data["current_build"]["datetime"].isString())))
+	    (hash_found && (!current.isObject() || !current["version"].isString() || !current["datetime"].isString())))
 	{
 		update_log.error("Some information seems unavailable");
 		return false;
@@ -219,37 +213,35 @@ bool update_manager::handle_json(bool automatic)
 	// Calculate how old the build is
 	const QString date_fmt = QStringLiteral("yyyy-MM-dd hh:mm:ss");
 
-	const QDateTime cur_date = hash_found ? QDateTime::fromString(json_data["current_build"]["datetime"].toString(), date_fmt) : QDateTime::currentDateTimeUtc();
+	const QDateTime cur_date = hash_found ? QDateTime::fromString(current["datetime"].toString(), date_fmt) : QDateTime::currentDateTimeUtc();
 	const QDateTime lts_date = QDateTime::fromString(latest["datetime"].toString(), date_fmt);
 
-	const qint64 diff_sec = cur_date.secsTo(lts_date);
-	const qint64 days     = diff_sec / (60 * 60 * 24);
-	const qint64 hours    = (diff_sec / (60 * 60)) % 24;
-	const qint64 minutes  = (diff_sec / 60) % 60;
+	const QString cur_str = cur_date.toString(date_fmt);
+	const QString lts_str = lts_date.toString(date_fmt);
 
-	update_log.notice("Current: %s, latest: %s, difference: %lld", cur_date.toString().toStdString(), lts_date.toString().toStdString(), diff_sec);
+	const qint64 diff_msec = cur_date.msecsTo(lts_date);
+
+	update_log.notice("Current: %s, latest: %s, difference: %lld ms", cur_str.toStdString(), lts_str.toStdString(), diff_msec);
+
+	Localized localized;
 
 	QString message;
 
 	if (hash_found)
 	{
-		message = tr("A new version of RPCS3 is available!\n\nCurrent version: %0 (%1)\nLatest version: %2 (%3)\nYour version is %4 day(s), %5 hour(s) and %6 minute(s) old.\n\nDo you want to update?")
-			.arg(json_data["current_build"]["version"].toString())
-			.arg(cur_date.toString(date_fmt))
+		message = tr("A new version of RPCS3 is available!\n\nCurrent version: %0 (%1)\nLatest version: %2 (%3)\nYour version is %4 old.\n\nDo you want to update?")
+			.arg(current["version"].toString())
+			.arg(cur_str)
 			.arg(latest["version"].toString())
-			.arg(lts_date.toString(date_fmt))
-			.arg(days)
-			.arg(hours)
-			.arg(minutes);
+			.arg(lts_str)
+			.arg(localized.GetVerboseTimeByMs(diff_msec));
 	}
 	else
 	{
-		message = tr("You're currently using a custom or PR build.\n\nLatest version: %0 (%1)\nThe latest version is %2 day(s), %3 hour(s) and %4 minute(s) old.\n\nDo you want to update to the latest official RPCS3 version?")
+		message = tr("You're currently using a custom or PR build.\n\nLatest version: %0 (%1)\nThe latest version is %2 old.\n\nDo you want to update to the latest official RPCS3 version?")
 			.arg(latest["version"].toString())
-			.arg(lts_date.toString(date_fmt))
-			.arg(std::abs(days))
-			.arg(std::abs(hours))
-			.arg(std::abs(minutes));
+			.arg(lts_str)
+			.arg(localized.GetVerboseTimeByMs(std::abs(diff_msec)));
 	}
 
 	if (QMessageBox::question(m_progress_dialog, tr("Update Available"), message, QMessageBox::Yes | QMessageBox::No) == QMessageBox::No)
@@ -269,14 +261,14 @@ bool update_manager::handle_json(bool automatic)
 	m_update_dialog = true;
 
 	const std::string request_url = latest[os]["download"].toString().toStdString();
-	curl_easy_setopt(m_curl, CURLOPT_URL, request_url.c_str());
-	curl_easy_setopt(m_curl, CURLOPT_FOLLOWLOCATION, 1);
+	curl_easy_setopt(m_curl->get_curl(), CURLOPT_URL, request_url.c_str());
+	curl_easy_setopt(m_curl->get_curl(), CURLOPT_FOLLOWLOCATION, 1);
 
 	m_curl_buf.clear();
 
 	auto thread = QThread::create([this]
 	{
-		const auto curl_result = curl_easy_perform(m_curl);
+		const auto curl_result = curl_easy_perform(m_curl->get_curl());
 		m_curl_result = curl_result == CURLE_OK;
 
 		if (!m_curl_result)
@@ -499,7 +491,7 @@ bool update_manager::handle_rpcs3()
 	size_t outBufferSize = 0;
 
 	// Creates temp folder for moving active files
-	const std::string tmp_folder = Emulator::GetEmuDir() + m_tmp_folder;
+	const std::string tmp_folder = Emulator::GetEmuDir() + "rpcs3_old/";
 	fs::create_dir(tmp_folder);
 
 	for (UInt32 i = 0; i < db.NumFiles; i++)

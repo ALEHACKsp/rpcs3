@@ -12,6 +12,7 @@
 #include "SPURecompiler.h"
 #include "lv2/sys_sync.h"
 #include "lv2/sys_prx.h"
+#include "lv2/sys_memory.h"
 #include "Emu/GDB.h"
 
 #ifdef LLVM_AVAILABLE
@@ -81,22 +82,6 @@ void fmt_class_string<ppu_join_status>::format(std::string& out, u64 arg)
 		case ppu_join_status::zombie: return "zombie";
 		case ppu_join_status::exited: return "exited";
 		case ppu_join_status::max: break;
-		}
-
-		return unknown;
-	});
-}
-
-template <>
-void fmt_class_string<ppu_decoder_type>::format(std::string& out, u64 arg)
-{
-	format_enum(out, arg, [](ppu_decoder_type type)
-	{
-		switch (type)
-		{
-		case ppu_decoder_type::precise: return "Interpreter (precise)";
-		case ppu_decoder_type::fast: return "Interpreter (fast)";
-		case ppu_decoder_type::llvm: return "Recompiler (LLVM)";
 		}
 
 		return unknown;
@@ -372,10 +357,10 @@ extern bool ppu_patch(u32 addr, u32 value)
 
 std::string ppu_thread::dump_all() const
 {
-	std::string ret = cpu_thread::dump_misc() + '\n';
-
-	ret += dump_misc() + '\n';
-	ret += dump_regs() + '\n';
+	std::string ret = cpu_thread::dump_misc();
+	ret += '\n';
+	ret += dump_regs();
+	ret += '\n';
 	ret += dump_callstack();
 
 	return ret;
@@ -389,16 +374,16 @@ std::string ppu_thread::dump_regs() const
 	{
 		auto reg = gpr[i];
 
-		fmt::append(ret, "GPR[%-2d] = 0x%-8llx", i, reg);
+		fmt::append(ret, "r%d%s = 0x%-8llx", i, i <= 9 ? " " : "", reg);
 
 		const u32 max_str_len = 32;
-		const u32 hex_count = 10;
+		const u32 hex_count = 8;
 
-		if (vm::check_addr(reg, max_str_len, vm::page_readable))
+		if (reg <= UINT32_MAX && vm::check_addr(static_cast<u32>(reg), max_str_len, vm::page_readable))
 		{
 			const u64 reg_ptr = vm::read64(reg);
 
-			if (vm::check_addr(reg_ptr, max_str_len, vm::page_readable))
+			if (reg_ptr <= UINT32_MAX && vm::check_addr(static_cast<u32>(reg_ptr), max_str_len, vm::page_readable))
 			{
 				reg = reg_ptr;
 			}
@@ -409,11 +394,11 @@ std::string ppu_thread::dump_regs() const
 
 			if (std::isprint(static_cast<u8>(buf_tmp[0])) && std::isprint(static_cast<u8>(buf_tmp[1])) && std::isprint(static_cast<u8>(buf_tmp[2])))
 			{
-				fmt::append(ret, "  ->  \"%s\"", buf_tmp.c_str());
+				fmt::append(ret, " -> \"%s\"", buf_tmp.c_str());
 			}
 			else
 			{
-				fmt::append(ret, "  ->  ");
+				fmt::append(ret, " -> ");
 
 				for (u32 j = 0; j < hex_count; ++j)
 				{
@@ -424,8 +409,16 @@ std::string ppu_thread::dump_regs() const
 
 		fmt::append(ret, "\n");
 	}
-	for (uint i = 0; i < 32; ++i) fmt::append(ret, "FPR[%d] = %.6G\n", i, fpr[i]);
-	for (uint i = 0; i < 32; ++i) fmt::append(ret, "VR[%d] = %s [x: %g y: %g z: %g w: %g]\n", i, vr[i], vr[i]._f[3], vr[i]._f[2], vr[i]._f[1], vr[i]._f[0]);
+
+	for (uint i = 0; i < 32; ++i)
+	{
+		fmt::append(ret, "f%d%s = %.6G\n", i, i <= 9 ? " " : "", fpr[i]);
+	}
+
+	for (uint i = 0; i < 32; ++i)
+	{
+		fmt::append(ret, "v%d%s = %s [x: %g y: %g z: %g w: %g]\n", i, i <= 9 ? " " : "", vr[i], vr[i]._f[3], vr[i]._f[2], vr[i]._f[1], vr[i]._f[0]);
+	}
 
 	fmt::append(ret, "CR = 0x%08x\n", cr.pack());
 	fmt::append(ret, "LR = 0x%llx\n", lr);
@@ -447,7 +440,7 @@ std::string ppu_thread::dump_callstack() const
 	for (u32 sp : dump_callstack_list())
 	{
 		// TODO: function addresses too
-		fmt::append(ret, "> from 0x%04llx (0x0)\n", vm::read64(static_cast<u32>(sp + 16)));
+		fmt::append(ret, "> from 0x%08x (0x0)\n", sp);
 	}
 
 	return ret;
@@ -501,7 +494,9 @@ std::string ppu_thread::dump_misc() const
 	fmt::append(ret, "Priority: %d\n", +prio);
 	fmt::append(ret, "Stack: 0x%x..0x%x\n", stack_addr, stack_addr + stack_size - 1);
 	fmt::append(ret, "Joiner: %s\n", joiner.load());
-	fmt::append(ret, "Commands: %u\n", cmd_queue.size());
+
+	if (const auto size = cmd_queue.size())
+		fmt::append(ret, "Commands: %u\n", size);
 
 	const char* _func = current_function;
 
@@ -512,7 +507,8 @@ std::string ppu_thread::dump_misc() const
 		ret += '\n';
 
 		for (u32 i = 3; i <= 6; i++)
-			fmt::append(ret, " ** GPR[%d] = 0x%llx\n", i, syscall_args[i - 3]);
+			if (gpr[i] != syscall_args[i - 3])
+				fmt::append(ret, " ** r%d = 0x%llx\n", i, syscall_args[i - 3]);
 	}
 	else if (is_paused())
 	{
@@ -736,6 +732,11 @@ ppu_thread::~ppu_thread()
 {
 	// Deallocate Stack Area
 	vm::dealloc_verbose_nothrow(stack_addr, vm::stack);
+
+	if (const auto dct = g_fxo->get<lv2_memory_container>())
+	{
+		dct->used -= stack_size;
+	}
 }
 
 ppu_thread::ppu_thread(const ppu_thread_params& param, std::string_view name, u32 prio, int detached)
@@ -1649,7 +1650,7 @@ extern void ppu_initialize(const ppu_module& info)
 		link_workload.emplace_back(obj_name, false);
 
 		// Check object file
-		if (fs::is_file(cache_path + obj_name + ".gz") || fs::is_file(cache_path + obj_name))
+		if (jit_compiler::check(cache_path + obj_name))
 		{
 			if (!jit)
 			{

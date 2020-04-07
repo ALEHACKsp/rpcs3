@@ -4,6 +4,9 @@
 
 #include "stdafx.h"
 
+#include "microphone_creator.h"
+
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QStringList>
 #include <QMap>
@@ -39,6 +42,7 @@ public:
 		EnableTSX,
 		AccurateGETLLAR,
 		AccuratePUTLLUC,
+		AccuratePPUfma,
 		AccurateRSXAccess,
 		AccurateXFloat,
 		SetDAZandFTZ,
@@ -187,26 +191,15 @@ public:
 	{
 		bool supportsVulkan = false;
 		QStringList vulkanAdapters;
-		QString name_Null = tr("Disable Video Output");
-		QString name_Vulkan = tr("Vulkan");
-		QString name_OpenGL = tr("OpenGL");
+		QString name_Null;
+		QString name_Vulkan;
+		QString name_OpenGL;
 		Render_Info Vulkan;
 		Render_Info OpenGL;
 		Render_Info NullRender;
 		std::vector<Render_Info*> renderers;
 
-		Render_Creator();
-	};
-
-	struct Microphone_Creator
-	{
-		QStringList microphones_list;
-		QString mic_none = tr("None");
-		std::array<std::string, 4> sel_list;
-		std::string SetDevice(u32 num, QString& text);
-		void ParseDevices(std::string list);
-		void RefreshList();
-		Microphone_Creator();
+		Render_Creator(const QString& name_null, const QString& name_vulkan, const QString& name_openGL);
 	};
 
 	std::set<SettingsType> m_broken_types; // list of broken settings
@@ -235,6 +228,9 @@ public:
 	/** Connects a line edit with the target settings type*/
 	void EnhanceEdit(QLineEdit* edit, SettingsType type);
 
+	/** Connects a button group with the target settings type*/
+	void EnhanceRadioButton(QButtonGroup* button_group, SettingsType type);
+
 	std::vector<std::string> GetLoadedLibraries();
 	void SaveSelectedLibraries(const std::vector<std::string>& libs);
 
@@ -257,7 +253,7 @@ public:
 	Render_Creator m_render_creator;
 
 	/** Gets a list of all the microphones available.*/
-	Microphone_Creator m_microphone_creator;
+	microphone_creator m_microphone_creator;
 
 	/** Loads the settings from path.*/
 	void LoadSettings(const std::string& title_id = "");
@@ -265,12 +261,15 @@ public:
 	/** Fixes all registered invalid settings after asking the user for permission.*/
 	void OpenCorrectionDialog(QWidget* parent = Q_NULLPTR);
 
+	/** Get a localized and therefore freely adjustable version of the string used in config.yml.*/
+	QString GetLocalizedSetting(const QString& original, SettingsType type, int index) const;
+
 public Q_SLOTS:
 	/** Writes the unsaved settings to file.  Used in settings dialog on accept.*/
 	void SaveSettings();
 private:
 	/** A helper map that keeps track of where a given setting type is located*/
-	const QMap<SettingsType, cfg_location> SettingsLoc =
+	const QMap<SettingsType, cfg_location> m_settings_location =
 	{
 		// Core Tab
 		{ PPUDecoder,               { "Core", "PPU Decoder"}},
@@ -287,6 +286,7 @@ private:
 		{ EnableTSX,                { "Core", "Enable TSX"}},
 		{ AccurateGETLLAR,          { "Core", "Accurate GETLLAR"}},
 		{ AccuratePUTLLUC,          { "Core", "Accurate PUTLLUC"}},
+		{ AccuratePPUfma,           { "Core", "PPU Accurate FMA"}},
 		{ AccurateRSXAccess,        { "Core", "Accurate RSX reservation access"}},
 		{ AccurateXFloat,           { "Core", "Accurate xfloat"}},
 		{ SetDAZandFTZ,             { "Core", "Set DAZ and FTZ"}},

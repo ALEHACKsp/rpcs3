@@ -7,7 +7,6 @@
 
 #include "Utilities/Config.h"
 #include "Utilities/Thread.h"
-#include "Utilities/StrUtil.h"
 
 #include <QMessageBox>
 #include <QLineEdit>
@@ -17,8 +16,6 @@
 #if defined(_WIN32) || defined(HAVE_VULKAN)
 #include "Emu/RSX/VK/VKHelpers.h"
 #endif
-
-#include "3rdparty/OpenAL/include/alext.h"
 
 LOG_CHANNEL(cfg_log, "CFG");
 
@@ -117,7 +114,10 @@ static QStringList getOptions(cfg_location location)
 	return values;
 }
 
-emu_settings::Render_Creator::Render_Creator()
+emu_settings::Render_Creator::Render_Creator(const QString& name_null, const QString& name_vulkan, const QString& name_openGL)
+	: name_Null(name_null)
+	, name_Vulkan(name_vulkan)
+	, name_OpenGL(name_openGL)
 {
 #if defined(WIN32) || defined(HAVE_VULKAN)
 	// Some drivers can get stuck when checking for vulkan-compatible gpus, f.ex. if they're waiting for one to get
@@ -168,7 +168,7 @@ emu_settings::Render_Creator::Render_Creator()
 	if (thread_running)
 	{
 		cfg_log.error("Vulkan device enumeration timed out");
-		auto button = QMessageBox::critical(nullptr, tr("Vulkan Check Timeout"),
+		const auto button = QMessageBox::critical(nullptr, tr("Vulkan Check Timeout"),
 			tr("Querying for Vulkan-compatible devices is taking too long. This is usually caused by malfunctioning "
 			"graphics drivers, reinstalling them could fix the issue.\n\n"
 			"Selecting ignore starts the emulator without Vulkan support."),
@@ -196,59 +196,12 @@ emu_settings::Render_Creator::Render_Creator()
 	renderers = { &Vulkan, &OpenGL, &NullRender };
 }
 
-emu_settings::Microphone_Creator::Microphone_Creator()
-{
-	RefreshList();
-}
-
-void emu_settings::Microphone_Creator::RefreshList()
-{
-	microphones_list.clear();
-	microphones_list.append(mic_none);
-
-	if (alcIsExtensionPresent(NULL, "ALC_ENUMERATION_EXT") == AL_TRUE)
-	{
-		const char *devices = alcGetString(NULL, ALC_CAPTURE_DEVICE_SPECIFIER);
-
-		while (*devices != 0)
-		{
-			microphones_list.append(qstr(devices));
-			devices += strlen(devices) + 1;
-		}
-	}
-	else
-	{
-		// Without enumeration we can only use one device
-		microphones_list.append(qstr(alcGetString(NULL, ALC_DEFAULT_DEVICE_SPECIFIER)));
-	}
-}
-
-std::string emu_settings::Microphone_Creator::SetDevice(u32 num, QString& text)
-{
-	if (text == mic_none)
-		sel_list[num-1] = "";
-	else
-		sel_list[num-1] = text.toStdString();
-
-	const std::string final_list = sel_list[0] + "@@@" + sel_list[1] + "@@@" + sel_list[2] + "@@@" + sel_list[3] + "@@@";
-	return final_list;
-}
-
-void emu_settings::Microphone_Creator::ParseDevices(std::string list)
-{
-	for (u32 index = 0; index < 4; index++)
-	{
-		sel_list[index] = "";
-	}
-
-	const auto devices_list = fmt::split(list, { "@@@" });
-	for (u32 index = 0; index < std::min<u32>(4, ::size32(devices_list)); index++)
-	{
-		sel_list[index] = devices_list[index];
-	}
-}
-
-emu_settings::emu_settings() : QObject()
+emu_settings::emu_settings()
+	: QObject()
+	, m_render_creator(
+		GetLocalizedSetting("Null", emu_settings::Renderer, static_cast<int>(video_renderer::null)),
+		GetLocalizedSetting("Vulkan", emu_settings::Renderer, static_cast<int>(video_renderer::vulkan)),
+		GetLocalizedSetting("OpenGl", emu_settings::Renderer, static_cast<int>(video_renderer::opengl)))
 {
 }
 
@@ -347,9 +300,9 @@ void emu_settings::EnhanceComboBox(QComboBox* combobox, SettingsType type, bool 
 			cfg_log.warning("EnhanceCombobox '%s': ignoring sorting request on ranged combo box", GetSettingName(type));
 		}
 
-		QStringList range = GetSettingOptions(type);
+		const QStringList range = GetSettingOptions(type);
 
-		int max_item = use_max ? max : range.last().toInt();
+		const int max_item = use_max ? max : range.last().toInt();
 
 		for (int i = range.first().toInt(); i <= max_item; i++)
 		{
@@ -358,25 +311,26 @@ void emu_settings::EnhanceComboBox(QComboBox* combobox, SettingsType type, bool 
 	}
 	else
 	{
-		QStringList settings = GetSettingOptions(type);
+		const QStringList settings = GetSettingOptions(type);
+
+		for (const QString& setting : settings)
+		{
+			const QString localized_setting = GetLocalizedSetting(setting, type, combobox->count());
+			combobox->addItem(localized_setting, QVariant(setting));
+		}
 
 		if (sorted)
 		{
-			settings.sort();
-		}
-
-		for (QString setting : settings)
-		{
-			combobox->addItem(tr(setting.toStdString().c_str()), QVariant(setting));
+			combobox->model()->sort(0, Qt::AscendingOrder);
 		}
 	}
 
-	std::string selected = GetSetting(type);
-	int index = combobox->findData(qstr(selected));
+	const std::string selected = GetSetting(type);
+	const int index = combobox->findData(qstr(selected));
 
 	if (index == -1)
 	{
-		std::string def = GetSettingDefault(type);
+		const std::string def = GetSettingDefault(type);
 		cfg_log.fatal("EnhanceComboBox '%s' tried to set an invalid value: %s. Setting to default: %s", GetSettingName(type), selected, def);
 		combobox->setCurrentIndex(combobox->findData(qstr(def)));
 		m_broken_types.insert(type);
@@ -425,7 +379,7 @@ void emu_settings::EnhanceCheckBox(QCheckBox* checkbox, SettingsType type)
 
 	connect(checkbox, &QCheckBox::stateChanged, [=, this](int val)
 	{
-		std::string str = val != 0 ? "true" : "false";
+		const std::string str = val != 0 ? "true" : "false";
 		SetSetting(type, str);
 	});
 }
@@ -438,12 +392,12 @@ void emu_settings::EnhanceSlider(QSlider* slider, SettingsType type)
 		return;
 	}
 
-	QStringList range = GetSettingOptions(type);
+	const QStringList range = GetSettingOptions(type);
 	bool ok_def, ok_sel, ok_min, ok_max;
 
-	int def = qstr(GetSettingDefault(type)).toInt(&ok_def);
-	int min = range.first().toInt(&ok_min);
-	int max = range.last().toInt(&ok_max);
+	const int def = qstr(GetSettingDefault(type)).toInt(&ok_def);
+	const int min = range.first().toInt(&ok_min);
+	const int max = range.last().toInt(&ok_max);
 
 	if (!ok_def || !ok_min || !ok_max)
 	{
@@ -451,7 +405,7 @@ void emu_settings::EnhanceSlider(QSlider* slider, SettingsType type)
 		return;
 	}
 
-	QString selected = qstr(GetSetting(type));
+	const QString selected = qstr(GetSetting(type));
 	int val = selected.toInt(&ok_sel);
 
 	if (!ok_sel || val < min || val > max)
@@ -478,12 +432,12 @@ void emu_settings::EnhanceSpinBox(QSpinBox* spinbox, SettingsType type, const QS
 		return;
 	}
 
-	QStringList range = GetSettingOptions(type);
+	const QStringList range = GetSettingOptions(type);
 	bool ok_def, ok_sel, ok_min, ok_max;
 
-	int def = qstr(GetSettingDefault(type)).toInt(&ok_def);
-	int min = range.first().toInt(&ok_min);
-	int max = range.last().toInt(&ok_max);
+	const int def = qstr(GetSettingDefault(type)).toInt(&ok_def);
+	const int min = range.first().toInt(&ok_min);
+	const int max = range.last().toInt(&ok_max);
 
 	if (!ok_def || !ok_min || !ok_max)
 	{
@@ -491,7 +445,7 @@ void emu_settings::EnhanceSpinBox(QSpinBox* spinbox, SettingsType type, const QS
 		return;
 	}
 
-	std::string selected = GetSetting(type);
+	const std::string selected = GetSetting(type);
 	int val = qstr(selected).toInt(&ok_sel);
 
 	if (!ok_sel || val < min || val > max)
@@ -520,12 +474,12 @@ void emu_settings::EnhanceDoubleSpinBox(QDoubleSpinBox* spinbox, SettingsType ty
 		return;
 	}
 
-	QStringList range = GetSettingOptions(type);
+	const QStringList range = GetSettingOptions(type);
 	bool ok_def, ok_sel, ok_min, ok_max;
 
-	double def = qstr(GetSettingDefault(type)).toDouble(&ok_def);
-	double min = range.first().toDouble(&ok_min);
-	double max = range.last().toDouble(&ok_max);
+	const double def = qstr(GetSettingDefault(type)).toDouble(&ok_def);
+	const double min = range.first().toDouble(&ok_min);
+	const double max = range.last().toDouble(&ok_max);
 
 	if (!ok_def || !ok_min || !ok_max)
 	{
@@ -533,7 +487,7 @@ void emu_settings::EnhanceDoubleSpinBox(QDoubleSpinBox* spinbox, SettingsType ty
 		return;
 	}
 
-	std::string selected = GetSetting(type);
+	const std::string selected = GetSetting(type);
 	double val = qstr(selected).toDouble(&ok_sel);
 
 	if (!ok_sel || val < min || val > max)
@@ -571,6 +525,41 @@ void emu_settings::EnhanceEdit(QLineEdit* edit, SettingsType type)
 	});
 }
 
+void emu_settings::EnhanceRadioButton(QButtonGroup* button_group, SettingsType type)
+{
+	if (!button_group)
+	{
+		cfg_log.fatal("EnhanceRadioButton '%s' was used with an invalid object", GetSettingName(type));
+		return;
+	}
+
+	const QString selected    = qstr(GetSetting(type));
+	const QStringList options = GetSettingOptions(type);
+
+	if (button_group->buttons().count() < options.size())
+	{
+		cfg_log.fatal("EnhanceRadioButton '%s': wrong button count", GetSettingName(type));
+		return;
+	}
+
+	for (int i = 0; i < options.count(); i++)
+	{
+		const QString localized_setting = GetLocalizedSetting(options[i], type, i);
+
+		button_group->button(i)->setText(localized_setting);
+
+		if (options[i] == selected)
+		{
+			button_group->button(i)->setChecked(true);
+		}
+
+		connect(button_group->button(i), &QAbstractButton::clicked, [=, this]()
+		{
+			SetSetting(type, sstr(options[i]));
+		});
+	}
+}
+
 std::vector<std::string> emu_settings::GetLoadedLibraries()
 {
 	return m_currentSettings["Core"]["Load libraries"].as<std::vector<std::string>, std::initializer_list<std::string>>({});
@@ -583,28 +572,28 @@ void emu_settings::SaveSelectedLibraries(const std::vector<std::string>& libs)
 
 QStringList emu_settings::GetSettingOptions(SettingsType type) const
 {
-	return getOptions(const_cast<cfg_location&&>(SettingsLoc[type]));
+	return getOptions(const_cast<cfg_location&&>(m_settings_location[type]));
 }
 
 std::string emu_settings::GetSettingName(SettingsType type) const
 {
-	cfg_location loc = SettingsLoc[type];
+	const cfg_location loc = m_settings_location[type];
 	return loc[loc.size() - 1];
 }
 
 std::string emu_settings::GetSettingDefault(SettingsType type) const
 {
-	return cfg_adapter::get_node(m_defaultSettings, SettingsLoc[type]).Scalar();
+	return cfg_adapter::get_node(m_defaultSettings, m_settings_location[type]).Scalar();
 }
 
 std::string emu_settings::GetSetting(SettingsType type) const
 {
-	return cfg_adapter::get_node(m_currentSettings, SettingsLoc[type]).Scalar();
+	return cfg_adapter::get_node(m_currentSettings, m_settings_location[type]).Scalar();
 }
 
 void emu_settings::SetSetting(SettingsType type, const std::string& val)
 {
-	cfg_adapter::get_node(m_currentSettings, SettingsLoc[type]) = val;
+	cfg_adapter::get_node(m_currentSettings, m_settings_location[type]) = val;
 }
 
 void emu_settings::OpenCorrectionDialog(QWidget* parent)
@@ -622,8 +611,8 @@ void emu_settings::OpenCorrectionDialog(QWidget* parent)
 	{
 		for (const auto& type : m_broken_types)
 		{
-			std::string def = GetSettingDefault(type);
-			std::string old = GetSetting(type);
+			const std::string def = GetSettingDefault(type);
+			const std::string old = GetSetting(type);
 			SetSetting(type, def);
 			cfg_log.success("The config entry '%s' was corrected from '%s' to '%s'", GetSettingName(type), old, def);
 		}
@@ -631,4 +620,198 @@ void emu_settings::OpenCorrectionDialog(QWidget* parent)
 		m_broken_types.clear();
 		cfg_log.success("You need to save the settings in order to make these changes permanent!");
 	}
+}
+
+QString emu_settings::GetLocalizedSetting(const QString& original, SettingsType type, int index) const
+{
+	switch (type)
+	{
+	case emu_settings::SPUBlockSize:
+		switch (static_cast<spu_block_size_type>(index))
+		{
+		case spu_block_size_type::safe: return tr("Safe", "SPU block size");
+		case spu_block_size_type::mega: return tr("Mega", "SPU block size");
+		case spu_block_size_type::giga: return tr("Giga", "SPU block size");
+		}
+		break;
+	case emu_settings::EnableTSX:
+		switch (static_cast<tsx_usage>(index))
+		{
+		case tsx_usage::disabled: return tr("Disabled", "Enable TSX");
+		case tsx_usage::enabled: return tr("Enabled", "Enable TSX");
+		case tsx_usage::forced: return tr("Forced", "Enable TSX");
+		}
+		break;
+	case emu_settings::Renderer:
+		switch (static_cast<video_renderer>(index))
+		{
+		case video_renderer::null: return tr("Disable Video Output", "Video renderer");
+		case video_renderer::opengl: return tr("OpenGL", "Video renderer");
+		case video_renderer::vulkan: return tr("Vulkan", "Video renderer");
+		}
+		break;
+	case emu_settings::FrameLimit:
+		switch (static_cast<frame_limit_type>(index))
+		{
+		case frame_limit_type::none: return tr("Off", "Frame limit");
+		case frame_limit_type::_59_94: return tr("59.94", "Frame limit");
+		case frame_limit_type::_50: return tr("50", "Frame limit");
+		case frame_limit_type::_60: return tr("60", "Frame limit");
+		case frame_limit_type::_30: return tr("30", "Frame limit");
+		case frame_limit_type::_auto: return tr("Auto", "Frame limit");
+		}
+		break;
+	case emu_settings::MSAA:
+		switch (static_cast<msaa_level>(index))
+		{
+		case msaa_level::none: return tr("Disabled", "MSAA");
+		case msaa_level::_auto: return tr("Auto", "MSAA");
+		}
+		break;
+	case emu_settings::AudioRenderer:
+		switch (static_cast<audio_renderer>(index))
+		{
+		case audio_renderer::null: return tr("Disable Audio Output", "Audio renderer");
+#ifdef _WIN32
+		case audio_renderer::xaudio: return tr("XAudio2", "Audio renderer");
+#endif
+#ifdef HAVE_ALSA
+		case audio_renderer::alsa: return tr("ALSA", "Audio renderer");
+#endif
+#ifdef HAVE_PULSE
+		case audio_renderer::pulse: return tr("PulseAudio", "Audio renderer");
+#endif
+		case audio_renderer::openal: return tr("OpenAL", "Audio renderer");
+#ifdef HAVE_FAUDIO
+		case audio_renderer::faudio: return tr("FAudio", "Audio renderer");
+#endif
+		}
+		break;
+	case emu_settings::MicrophoneType:
+		switch (static_cast<microphone_handler>(index))
+		{
+		case microphone_handler::null: return tr("Disabled", "Microphone handler");
+		case microphone_handler::standard: return tr("Standard", "Microphone handler");
+		case microphone_handler::singstar: return tr("SingStar", "Microphone handler");
+		case microphone_handler::real_singstar: return tr("Real SingStar", "Microphone handler");
+		case microphone_handler::rocksmith: return tr("Rocksmith", "Microphone handler");
+		}
+		break;
+	case emu_settings::KeyboardHandler:
+		switch (static_cast<keyboard_handler>(index))
+		{
+		case keyboard_handler::null: return tr("Null", "Keyboard handler");
+		case keyboard_handler::basic: return tr("Basic", "Keyboard handler");
+		}
+		break;
+	case emu_settings::MouseHandler:
+		switch (static_cast<mouse_handler>(index))
+		{
+		case mouse_handler::null: return tr("Null", "Mouse handler");
+		case mouse_handler::basic: return tr("Basic", "Mouse handler");
+		}
+		break;
+	case emu_settings::CameraType:
+		switch (static_cast<fake_camera_type>(index))
+		{
+		case fake_camera_type::unknown: return tr("Unknown", "Camera type");
+		case fake_camera_type::eyetoy: return tr("EyeToy", "Camera type");
+		case fake_camera_type::eyetoy2: return tr("PS Eye", "Camera type");
+		case fake_camera_type::uvc1_1: return tr("UVC 1.1", "Camera type");
+		}
+		break;
+	case emu_settings::Camera:
+		switch (static_cast<camera_handler>(index))
+		{
+		case camera_handler::null: return tr("Null", "Camera handler");
+		case camera_handler::fake: return tr("Fake", "Camera handler");
+		}
+		break;
+	case emu_settings::Move:
+		switch (static_cast<move_handler>(index))
+		{
+		case move_handler::null: return tr("Null", "Move handler");
+		case move_handler::fake: return tr("Fake", "Move handler");
+		case move_handler::mouse: return tr("Mouse", "Move handler");
+		}
+		break;
+	case emu_settings::InternetStatus:
+		switch (static_cast<np_internet_status>(index))
+		{
+		case np_internet_status::disabled: return tr("Disconnected", "Internet Status");
+		case np_internet_status::enabled: return tr("Connected", "Internet Status");
+		}
+		break;
+	case emu_settings::PSNStatus:
+		switch (static_cast<np_psn_status>(index))
+		{
+		case np_psn_status::disabled: return tr("Disconnected", "PSN Status");
+		case np_psn_status::fake: return tr("Simulated", "PSN Status");
+		}
+		break;
+	case emu_settings::SleepTimersAccuracy:
+		switch (static_cast<sleep_timers_accuracy_level>(index))
+		{
+		case sleep_timers_accuracy_level::_as_host: return tr("As Host", "Sleep timers accuracy");
+		case sleep_timers_accuracy_level::_usleep: return tr("Usleep Only", "Sleep timers accuracy");
+		case sleep_timers_accuracy_level::_all_timers: return tr("All Timers", "Sleep timers accuracy");
+		}
+		break;
+	case emu_settings::PerfOverlayDetailLevel:
+		switch (static_cast<detail_level>(index))
+		{
+		case detail_level::minimal: return tr("Minimal", "Detail Level");
+		case detail_level::low: return tr("Low", "Detail Level");
+		case detail_level::medium: return tr("Medium", "Detail Level");
+		case detail_level::high: return tr("High", "Detail Level");
+		}
+		break;
+	case emu_settings::PerfOverlayPosition:
+		switch (static_cast<screen_quadrant>(index))
+		{
+		case screen_quadrant::top_left: return tr("Top Left", "Performance overlay position");
+		case screen_quadrant::top_right: return tr("Top Right", "Performance overlay position");
+		case screen_quadrant::bottom_left: return tr("Bottom Left", "Performance overlay position");
+		case screen_quadrant::bottom_right: return tr("Bottom Right", "Performance overlay position");
+		}
+		break;
+	case emu_settings::LibLoadOptions:
+		switch (static_cast<lib_loading_type>(index))
+		{
+		case lib_loading_type::manual: return tr("Manually load selected libraries", "Libraries");
+		case lib_loading_type::hybrid: return tr("Load automatic and manual selection", "Libraries");
+		case lib_loading_type::liblv2only: return tr("Load liblv2.sprx only", "Libraries");
+		case lib_loading_type::liblv2both: return tr("Load liblv2.sprx and manual selection", "Libraries");
+		case lib_loading_type::liblv2list: return tr("Load liblv2.sprx and strict selection", "Libraries");
+		}
+		break;
+	case emu_settings::PPUDecoder:
+		switch (static_cast<ppu_decoder_type>(index))
+		{
+		case ppu_decoder_type::precise: return tr("Interpreter (precise)", "PPU decoder");
+		case ppu_decoder_type::fast: return tr("Interpreter (fast)", "PPU decoder");
+		case ppu_decoder_type::llvm: return tr("Recompiler (LLVM)", "PPU decoder");
+		}
+		break;
+	case emu_settings::SPUDecoder:
+		switch (static_cast<spu_decoder_type>(index))
+		{
+		case spu_decoder_type::precise: return tr("Interpreter (precise)", "SPU decoder");
+		case spu_decoder_type::fast: return tr("Interpreter (fast)", "SPU decoder");
+		case spu_decoder_type::asmjit: return tr("Recompiler (ASMJIT)", "SPU decoder");
+		case spu_decoder_type::llvm: return tr("Recompiler (LLVM)", "SPU decoder");
+		}
+		break;
+	case emu_settings::EnterButtonAssignment:
+		switch (static_cast<enter_button_assign>(index))
+		{
+		case enter_button_assign::circle: return tr("Enter with circle", "Enter button assignment");
+		case enter_button_assign::cross: return tr("Enter with cross", "Enter button assignment");
+		}
+		break;
+	default:
+		break;
+	}
+
+	return original;
 }

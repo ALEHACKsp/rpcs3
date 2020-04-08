@@ -615,7 +615,7 @@ namespace rsx
 			{
 				restore_point = ctrl->get;
 				saved_fifo_ret = fifo_ret_addr;
-				sync_point_request = false;
+				sync_point_request.release(false);
 			}
 
 			// Execute backend-local tasks first
@@ -2424,8 +2424,8 @@ namespace rsx
 					if (u64 to_unmap = unmap_status[i])
 					{
 						// Each 64 entries are grouped by a bit
-						const u64 io_event = 0x100000000ull << i;
-						sys_event_port_send(g_fxo->get<lv2_rsx_config>()->rsx_event_port, 0, io_event, to_unmap);
+						const u64 io_event = SYS_RSX_EVENT_UNMAPPED_BASE << i;
+						g_fxo->get<lv2_rsx_config>()->send_event(0, io_event, to_unmap);
 					}
 				}
 			}

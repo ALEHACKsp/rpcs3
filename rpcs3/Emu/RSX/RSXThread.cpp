@@ -703,6 +703,7 @@ namespace rsx
 			{
 			default:
 				rsx_log.error("bad clip plane control (0x%x)", static_cast<u8>(clip_plane_control[index]));
+				[[fallthrough]];
 
 			case rsx::user_clip_plane_op::disable:
 				clip_enabled_flags[index] = 0;
@@ -2264,7 +2265,7 @@ namespace rsx
 
 	bool thread::is_fifo_idle() const
 	{
-		return ctrl->get == (ctrl->put & ~3);
+		return ctrl == nullptr || ctrl->get == (ctrl->put & ~3);
 	}
 
 	void thread::flush_fifo()
@@ -2413,7 +2414,7 @@ namespace rsx
 
 				for (u32 ea = address >> 20, end = ea + (size >> 20); ea < end; ea++)
 				{
-					const u32 io = utils::ror32(iomap_table.io[ea], 20);
+					const u32 io = std::rotr<u32>(iomap_table.io[ea], 20);
 
 					if (io + 1)
 					{
@@ -2616,8 +2617,8 @@ namespace rsx
 			{
 				m_skip_frame_ctr++;
 
-				if (m_skip_frame_ctr == g_cfg.video.consequtive_frames_to_draw)
-					m_skip_frame_ctr = -g_cfg.video.consequtive_frames_to_skip;
+				if (m_skip_frame_ctr >= g_cfg.video.consecutive_frames_to_draw)
+					m_skip_frame_ctr = -g_cfg.video.consecutive_frames_to_skip;
 
 				skip_current_frame = (m_skip_frame_ctr < 0);
 			}

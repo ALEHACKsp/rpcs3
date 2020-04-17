@@ -93,7 +93,7 @@ namespace cfg_adapter
 }
 
 /** Returns possible options for values for some particular setting.*/
-static QStringList getOptions(cfg_location location)
+static QStringList get_options(cfg_location location)
 {
 	QStringList values;
 	auto begin = location.cbegin();
@@ -103,6 +103,14 @@ static QStringList getOptions(cfg_location location)
 		values.append(qstr(v));
 	}
 	return values;
+}
+
+/** Returns dynamic property for some particular setting.*/
+static bool get_is_dynamic(cfg_location location)
+{
+	auto begin = location.cbegin();
+	auto end = location.cend();
+	return cfg_adapter::get_cfg(g_cfg, begin, end).get_is_dynamic();
 }
 
 emu_settings::emu_settings()
@@ -212,17 +220,17 @@ void emu_settings::EnhanceComboBox(QComboBox* combobox, emu_settings_type type, 
 
 		for (int i = range.first().toInt(); i <= max_item; i++)
 		{
-			combobox->addItem(QString::number(i), QVariant(QString::number(i)));
+			combobox->addItem(QString::number(i), i);
 		}
 	}
 	else
 	{
 		const QStringList settings = GetSettingOptions(type);
 
-		for (const QString& setting : settings)
+		for (int i = 0; i < settings.count(); i++)
 		{
-			const QString localized_setting = GetLocalizedSetting(setting, type, combobox->count());
-			combobox->addItem(localized_setting, QVariant(setting));
+			const QString localized_setting = GetLocalizedSetting(settings[i], type, combobox->count());
+			combobox->addItem(localized_setting, QVariant({settings[i], i}));
 		}
 
 		if (sorted)
@@ -232,7 +240,27 @@ void emu_settings::EnhanceComboBox(QComboBox* combobox, emu_settings_type type, 
 	}
 
 	const std::string selected = GetSetting(type);
-	const int index = combobox->findData(qstr(selected));
+	const QString selected_q = qstr(selected);
+	int index = -1;
+
+	if (is_ranged)
+	{
+		index = combobox->findData(selected_q);
+	}
+	else
+	{
+		for (int i = 0; i < combobox->count(); i++)
+		{
+			const QVariantList var_list = combobox->itemData(i).toList();
+			ASSERT(var_list.size() == 2 && var_list[0].canConvert<QString>());
+
+			if (selected_q == var_list[0].toString())
+			{
+				index = i;
+				break;
+			}
+		}
+	}
 
 	if (index == -1)
 	{
@@ -248,7 +276,16 @@ void emu_settings::EnhanceComboBox(QComboBox* combobox, emu_settings_type type, 
 
 	connect(combobox, static_cast<void(QComboBox::*)(int)>(&QComboBox::currentIndexChanged), [=, this](int index)
 	{
-		SetSetting(type, sstr(combobox->itemData(index)));
+		if (is_ranged)
+		{
+			SetSetting(type, sstr(combobox->itemData(index)));
+		}
+		else
+		{
+			const QVariantList var_list = combobox->itemData(index).toList();
+			ASSERT(var_list.size() == 2 && var_list[0].canConvert<QString>());
+			SetSetting(type, sstr(var_list[0]));
+		}
 	});
 }
 
@@ -414,7 +451,7 @@ void emu_settings::EnhanceDoubleSpinBox(QDoubleSpinBox* spinbox, emu_settings_ty
 	});
 }
 
-void emu_settings::EnhanceEdit(QLineEdit* edit, emu_settings_type type)
+void emu_settings::EnhanceLineEdit(QLineEdit* edit, emu_settings_type type)
 {
 	if (!edit)
 	{
@@ -478,7 +515,7 @@ void emu_settings::SaveSelectedLibraries(const std::vector<std::string>& libs)
 
 QStringList emu_settings::GetSettingOptions(emu_settings_type type) const
 {
-	return getOptions(const_cast<cfg_location&&>(m_settings_location[type]));
+	return get_options(const_cast<cfg_location&&>(m_settings_location[type]));
 }
 
 std::string emu_settings::GetSettingName(emu_settings_type type) const
@@ -720,4 +757,10 @@ QString emu_settings::GetLocalizedSetting(const QString& original, emu_settings_
 	}
 
 	return original;
+}
+
+bool emu_settings::GetIsDynamicConfig(emu_settings_type type)
+{
+	const cfg_location loc = m_settings_location[type];
+	return get_is_dynamic(loc);
 }

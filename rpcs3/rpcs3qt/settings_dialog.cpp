@@ -406,9 +406,6 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	});
 	ui->disableVertexCache->setEnabled(!ui->multithreadedRSX->isChecked());
 
-	m_emu_settings->EnhanceCheckBox(ui->disableAsyncShaders, emu_settings_type::DisableAsyncShaderCompiler);
-	SubscribeTooltip(ui->disableAsyncShaders, tooltips.settings.disable_async_shaders);
-
 	m_emu_settings->EnhanceCheckBox(ui->scrictModeRendering, emu_settings_type::StrictRenderingMode);
 	SubscribeTooltip(ui->scrictModeRendering, tooltips.settings.strict_rendering_mode);
 	connect(ui->scrictModeRendering, &QCheckBox::clicked, [this](bool checked)
@@ -417,6 +414,21 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		ui->gb_minimumScalableDimension->setEnabled(!checked);
 		ui->gb_anisotropicFilter->setEnabled(!checked);
 	});
+
+	// Radio buttons
+	
+	SubscribeTooltip(ui->rb_legacy_recompiler, tooltips.settings.legacy_shader_recompiler);
+	SubscribeTooltip(ui->rb_async_recompiler, tooltips.settings.async_shader_recompiler);
+	SubscribeTooltip(ui->rb_async_with_shader_interpreter, tooltips.settings.async_with_shader_interpreter);
+	SubscribeTooltip(ui->rb_shader_interpreter_only, tooltips.settings.shader_interpreter_only);
+
+	QButtonGroup *shader_mode_bg = new QButtonGroup(this);
+	shader_mode_bg->addButton(ui->rb_legacy_recompiler, static_cast<int>(shader_mode::recompiler));
+	shader_mode_bg->addButton(ui->rb_async_recompiler, static_cast<int>(shader_mode::async_recompiler));
+	shader_mode_bg->addButton(ui->rb_async_with_shader_interpreter, static_cast<int>(shader_mode::async_with_interpreter));
+	shader_mode_bg->addButton(ui->rb_shader_interpreter_only, static_cast<int>(shader_mode::interpreter_only));
+
+	m_emu_settings->EnhanceRadioButton(shader_mode_bg, emu_settings_type::ShaderMode);
 
 	// Sliders
 
@@ -1252,13 +1264,26 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	if (!game)
 	{
 		SubscribeTooltip(ui->gs_resizeOnBoot, tooltips.settings.resize_on_boot);
-
 		SubscribeTooltip(ui->gs_disableMouse, tooltips.settings.disable_mouse);
+		SubscribeTooltip(ui->gs_disableKbHotkeys, tooltips.settings.disable_kb_hotkeys);
+		SubscribeTooltip(ui->gs_showMouseInFullscreen, tooltips.settings.show_mouse_in_fullscreen);
 
 		ui->gs_disableMouse->setChecked(m_gui_settings->GetValue(gui::gs_disableMouse).toBool());
-		connect(ui->gs_disableMouse, &QCheckBox::clicked, [=, this](bool val)
+		connect(ui->gs_disableMouse, &QCheckBox::clicked, [this](bool val)
 		{
 			m_gui_settings->SetValue(gui::gs_disableMouse, val);
+		});
+
+		ui->gs_disableKbHotkeys->setChecked(m_gui_settings->GetValue(gui::gs_disableKbHotkeys).toBool());
+		connect(ui->gs_disableKbHotkeys, &QCheckBox::clicked, [this](bool val)
+		{
+			m_gui_settings->SetValue(gui::gs_disableKbHotkeys, val);
+		});
+
+		ui->gs_showMouseInFullscreen->setChecked(m_gui_settings->GetValue(gui::gs_showMouseFs).toBool());
+		connect(ui->gs_showMouseInFullscreen, &QCheckBox::clicked, [this](bool val)
+		{
+			m_gui_settings->SetValue(gui::gs_showMouseFs, val);
 		});
 
 		const bool enable_buttons = m_gui_settings->GetValue(gui::gs_resize).toBool();

@@ -34,6 +34,8 @@ rsx::frame_capture_data frame_capture;
 
 extern CellGcmOffsetTable offsetTable;
 extern thread_local std::string(*g_tls_log_prefix)();
+extern u64 sys_time_get_timebase_frequency();
+extern u64 get_timebased_time();
 
 namespace rsx
 {
@@ -559,7 +561,9 @@ namespace rsx
 
 		g_fxo->init<named_thread>("RSX Decompiler Thread", [this]
 		{
-			if (g_cfg.video.disable_asynchronous_shader_compiler)
+			const auto shadermode = g_cfg.video.shadermode.get();
+
+			if (shadermode != shader_mode::async_recompiler && shadermode != shader_mode::async_with_interpreter)
 			{
 				// Die
 				return;
@@ -738,7 +742,7 @@ namespace rsx
 	{
 		//TODO: Properly support alpha-to-coverage and alpha-to-one behavior in shaders
 		auto fragment_alpha_func = rsx::method_registers.alpha_func();
-		auto alpha_ref = rsx::method_registers.alpha_ref() / 255.f;
+		auto alpha_ref = rsx::method_registers.alpha_ref();
 		auto rop_control = rsx::method_registers.alpha_test_enabled()? 1u : 0u;
 
 		if (rsx::method_registers.msaa_alpha_to_coverage_enabled() && !backend_config.supports_hw_a2c)
@@ -811,8 +815,15 @@ namespace rsx
 
 	u64 thread::timestamp()
 	{
-		// Get timestamp, and convert it from microseconds to nanoseconds
-		const u64 t = get_guest_system_time() * 1000;
+		const u64 freq = sys_time_get_timebase_frequency();
+
+		auto get_time_ns = [freq]()
+		{
+			const u64 t = get_timebased_time();
+			return (t / freq * 1'000'000'000 + t % freq * 1'000'000'000 / freq);
+		};
+
+		const u64 t = get_time_ns();
 		if (t != timestamp_ctrl)
 		{
 			timestamp_ctrl = t;
@@ -820,7 +831,23 @@ namespace rsx
 			return t;
 		}
 
-		timestamp_subvalue += 10;
+		// Check if we passed the limit of what fixed increments is legal for
+		// Wait for the next time value reported if we passed the limit
+		if ((1'000'000'000 / freq) - timestamp_subvalue <= 2)
+		{
+			u64 now = get_time_ns();
+
+			for (; t == now; now = get_time_ns())
+			{
+				_mm_pause();
+			}
+
+			timestamp_ctrl = now;
+			timestamp_subvalue = 0;
+			return now;
+		}
+
+		timestamp_subvalue += 2;
 		return t + timestamp_subvalue;
 	}
 

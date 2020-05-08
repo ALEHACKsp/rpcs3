@@ -26,10 +26,7 @@ error_code sys_rwlock_create(ppu_thread& ppu, vm::ptr<u32> rw_lock_id, vm::ptr<s
 
 	const u32 protocol = _attr.protocol;
 
-	if (protocol == SYS_SYNC_PRIORITY_INHERIT)
-		sys_rwlock.todo("sys_rwlock_create(): SYS_SYNC_PRIORITY_INHERIT");
-
-	if (protocol != SYS_SYNC_FIFO && protocol != SYS_SYNC_PRIORITY && protocol != SYS_SYNC_PRIORITY_INHERIT)
+	if (protocol != SYS_SYNC_FIFO && protocol != SYS_SYNC_PRIORITY)
 	{
 		sys_rwlock.error("sys_rwlock_create(): unknown protocol (0x%x)", protocol);
 		return CELL_EINVAL;
@@ -366,7 +363,7 @@ error_code sys_rwlock_wlock(ppu_thread& ppu, u32 rw_lock_id, u64 timeout)
 					});
 
 					// Protocol doesn't matter here since they are all enqueued anyways
-					while (auto cpu = rwlock->schedule<ppu_thread>(rwlock->rq, SYS_SYNC_FIFO))
+					for (auto cpu : ::as_rvalue(std::move(rwlock->rq)))
 					{
 						rwlock->append(cpu);
 					}
@@ -459,7 +456,7 @@ error_code sys_rwlock_wunlock(ppu_thread& ppu, u32 rw_lock_id)
 		}
 		else if (auto readers = rwlock->rq.size())
 		{
-			while (auto cpu = rwlock->schedule<ppu_thread>(rwlock->rq, SYS_SYNC_FIFO))
+			for (auto cpu : ::as_rvalue(std::move(rwlock->rq)))
 			{
 				rwlock->append(cpu);
 			}

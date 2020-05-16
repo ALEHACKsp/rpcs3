@@ -3179,6 +3179,12 @@ bool spu_thread::stop_and_signal(u32 code)
 				continue;
 			}
 
+			if (std::exchange(group->set_terminate, true))
+			{
+				// Whoever terminated first decides the error status + cause
+				return true;
+			}
+
 			for (auto& thread : group->threads)
 			{
 				if (thread && thread.get() != this)
@@ -3220,14 +3226,7 @@ bool spu_thread::stop_and_signal(u32 code)
 	}
 	}
 
-	if (!ch_out_mbox.get_count())
-	{
-		fmt::throw_exception("Unknown STOP code: 0x%x (Out_MBox is empty)" HERE, code);
-	}
-	else
-	{
-		fmt::throw_exception("Unknown STOP code: 0x%x (Out_MBox=0x%x)" HERE, code, ch_out_mbox.get_value());
-	}
+	fmt::throw_exception("Unknown STOP code: 0x%x (Out_MBox=%s)" HERE, code, ch_out_mbox);
 }
 
 void spu_thread::halt()

@@ -28,9 +28,10 @@
 #define GL_FRAGMENT_CONSTANT_BUFFERS_BIND_SLOT 3
 #define GL_FRAGMENT_STATE_BIND_SLOT 4
 #define GL_FRAGMENT_TEXTURE_PARAMS_BIND_SLOT 5
-#define GL_INTERPRETER_VERTEX_BLOCK 6
-#define GL_INTERPRETER_FRAGMENT_BLOCK 7
-#define GL_COMPUTE_BUFFER_SLOT(index) (index + 8)
+#define GL_RASTERIZER_STATE_BIND_SLOT 6
+#define GL_INTERPRETER_VERTEX_BLOCK 7
+#define GL_INTERPRETER_FRAGMENT_BLOCK 8
+#define GL_COMPUTE_BUFFER_SLOT(index) (index + 9)
 
 // Noop keyword outside of Windows (used in log_debug)
 #if !defined(_WIN32) && !defined(APIENTRY)
@@ -2465,7 +2466,7 @@ public:
 				if (g_cfg.video.log_programs)
 				{
 					std::string base_name;
-					switch (shader_type)
+					switch (type)
 					{
 					case ::glsl::program_domain::glsl_vertex_program:
 						base_name = "shaderlog/VertexProgram";

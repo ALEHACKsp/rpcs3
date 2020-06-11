@@ -313,5 +313,43 @@ namespace gui
 		{
 			open_dir(sstr(path));
 		}
+
+		QTreeWidgetItem* find_child(QTreeWidgetItem* parent, const QString& text)
+		{
+			if (parent)
+			{
+				for (int i = 0; i < parent->childCount(); i++)
+				{
+					if (parent->child(i)->text(0) == text)
+					{
+						return parent->child(i);
+					}
+				}
+			}
+			return nullptr;
+		}
+
+		QTreeWidgetItem* add_child(QTreeWidgetItem *parent, const QString& text, int column)
+		{
+			if (parent)
+			{
+				QTreeWidgetItem *tree_item = new QTreeWidgetItem();
+				tree_item->setText(0, text);
+				parent->addChild(tree_item);
+				return tree_item;
+			}
+			return nullptr;
+		};
+
+		void remove_children(QTreeWidgetItem* parent)
+		{
+			if (parent)
+			{
+				for (int i = 0; i < parent->childCount(); i++)
+				{
+					parent->removeChild(parent->child(i));
+				}
+			}
+		}
 	} // utils
 } // gui

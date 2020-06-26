@@ -48,13 +48,6 @@ void FragmentProgramDecompiler::SetDst(std::string code, u32 flags)
 
 	if (!dst.no_dest)
 	{
-		if (dst.exp_tex)
-		{
-			//Expand [0,1] to [-1, 1]. Confirmed by Castlevania: LOS
-			AddCode("//exp tex flag is set");
-			code = "((" + code + "- 0.5) * 2.)";
-		}
-
 		if (dst.fp16 && device_props.has_native_half_support && !(flags & OPFLAGS::skip_type_cast))
 		{
 			// Cast to native data type
@@ -180,18 +173,17 @@ void FragmentProgramDecompiler::AddCode(const std::string& code)
 std::string FragmentProgramDecompiler::GetMask()
 {
 	std::string ret;
+	ret.reserve(5);
+	
+	static constexpr std::string_view dst_mask = "xyzw";
 
-	static const char dst_mask[4] =
-	{
-		'x', 'y', 'z', 'w',
-	};
-
+	ret += '.';
 	if (dst.mask_x) ret += dst_mask[0];
 	if (dst.mask_y) ret += dst_mask[1];
 	if (dst.mask_z) ret += dst_mask[2];
 	if (dst.mask_w) ret += dst_mask[3];
 
-	return ret.empty() || strncmp(ret.c_str(), dst_mask, 4) == 0 ? "" : ("." + ret);
+	return ret == "."sv || ret == ".xyzw"sv ? "" : (ret);
 }
 
 std::string FragmentProgramDecompiler::AddReg(u32 index, bool fp16)
@@ -373,14 +365,20 @@ std::string FragmentProgramDecompiler::Format(const std::string& code, bool igno
 
 std::string FragmentProgramDecompiler::GetRawCond()
 {
-	static const char f[4] = { 'x', 'y', 'z', 'w' };
+	static constexpr std::string_view f = "xyzw";
 
 	std::string swizzle, cond;
+	swizzle.reserve(5);
+	swizzle += '.';
 	swizzle += f[src0.cond_swizzle_x];
 	swizzle += f[src0.cond_swizzle_y];
 	swizzle += f[src0.cond_swizzle_z];
 	swizzle += f[src0.cond_swizzle_w];
-	swizzle = swizzle == "xyzw" ? "" : "." + swizzle;
+
+	if (swizzle == ".xyzw"sv)
+	{
+		swizzle.clear();
+	}
 
 	if (src0.exec_if_gr && src0.exec_if_eq)
 		cond = compareFunction(COMPARE::FUNCTION_SGE, AddCond() + swizzle, getFloatTypeName(4) + "(0., 0., 0., 0.)");
@@ -670,15 +668,20 @@ template<typename T> std::string FragmentProgramDecompiler::GetSRC(T src)
 		break;
 	}
 
-	static const char f[4] = { 'x', 'y', 'z', 'w' };
+	static constexpr std::string_view f = "xyzw";
 
 	std::string swizzle;
+	swizzle.reserve(5);
+	swizzle += '.';
 	swizzle += f[src.swizzle_x];
 	swizzle += f[src.swizzle_y];
 	swizzle += f[src.swizzle_z];
 	swizzle += f[src.swizzle_w];
 
-	if (strncmp(swizzle.c_str(), f, 4) != 0) ret += "." + swizzle;
+	if (swizzle != ".xyzw"sv)
+	{
+		ret += swizzle;
+	}
 
 	// Warning: Modifier order matters. e.g neg should be applied after precision clamping (tested with Naruto UNS)
 	if (src.abs) ret = "abs(" + ret + ")";
@@ -988,8 +991,20 @@ bool FragmentProgramDecompiler::handle_tex_srb(u32 opcode)
 			}
 		}
 
+		if (dst.exp_tex)
+		{
+			properties.has_exp_tex_op = true;
+			AddCode("_enable_texture_expand();");
+		}
+
 		auto function = functions[select];
 		SetDst(getFunction(function) + mask);
+
+		if (dst.exp_tex)
+		{
+			// Cleanup
+			AddCode("_disable_texture_expand();");
+		}
 	};
 
 	switch (opcode)

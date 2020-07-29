@@ -753,14 +753,6 @@ namespace rsx
 							tex.is_flushable() &&
 							tex.get_section_base() != fault_range_in.start)
 						{
-							if (tex.get_context() == texture_upload_context::framebuffer_storage &&
-								tex.inside(fault_range, section_bounds::full_range))
-							{
-								// FBO data 'lives on' in the new region. Surface cache handles memory intersection for us.
-								verify(HERE), tex.inside(fault_range, section_bounds::locked_range);
-								tex.discard(false);
-							}
-
 							// HACK: When being superseded by an fbo, we preserve overlapped flushables unless the start addresses match
 							continue;
 						}
@@ -1174,6 +1166,20 @@ namespace rsx
 			invalidate_range_impl_base(cmd, rsx_range, invalidation_cause::committed_as_fbo, std::forward<Args>(extras)...);
 		}
 
+		template <typename ...Args>
+		void discard_framebuffer_memory_region(commandbuffer_type& cmd, const address_range& rsx_range, Args&&... extras)
+		{
+			if (g_cfg.video.write_color_buffers || g_cfg.video.write_depth_buffer)
+			{
+				auto* region_ptr = find_cached_texture(rsx_range, RSX_GCM_FORMAT_IGNORED, false, false);
+				if (region_ptr && region_ptr->is_locked() && region_ptr->get_context() == texture_upload_context::framebuffer_storage)
+				{
+					verify(HERE), region_ptr->get_protection() == utils::protection::no;
+					region_ptr->discard(false);
+				}
+			}
+		}
+
 		void set_memory_read_flags(const address_range &memory_range, memory_read_flags flags)
 		{
 			std::lock_guard lock(m_cache_mutex);
@@ -1334,6 +1340,23 @@ namespace rsx
 			std::lock_guard lock(m_cache_mutex);
 
 			m_storage.purge_unreleased_sections();
+		}
+
+		bool handle_memory_pressure(problem_severity severity)
+		{
+			if (m_storage.m_unreleased_texture_objects)
+			{
+				m_storage.purge_unreleased_sections();
+				return true;
+			}
+
+			if (severity >= problem_severity::severe)
+			{
+				// Things are bad, previous check should have released 'unreleased' pool
+				return m_storage.purge_unlocked_sections();
+			}
+
+			return false;
 		}
 
 		image_view_type create_temporary_subresource(commandbuffer_type &cmd, deferred_subresource& desc)

@@ -333,25 +333,40 @@ extern void ppu_remove_breakpoint(u32 addr)
 
 extern bool ppu_patch(u32 addr, u32 value)
 {
-	if (g_cfg.core.ppu_decoder == ppu_decoder_type::llvm && Emu.GetStatus() != system_state::ready)
+	if (addr % 4)
+	{
+		ppu_log.fatal("Patch failed at 0x%x: unanligned memory address.", addr);
+		return false;
+	}
+
+	vm::reader_lock rlock;
+
+	if (!vm::check_addr(addr, sizeof(value)))
+	{
+		ppu_log.fatal("Patch failed at 0x%x: invalid memory address.", addr);
+		return false;
+	}
+
+	const bool is_exec = vm::check_addr(addr, sizeof(value), vm::page_executable);
+
+	if (is_exec && g_cfg.core.ppu_decoder == ppu_decoder_type::llvm && !Emu.IsReady())
 	{
 		// TODO: support recompilers
 		ppu_log.fatal("Patch failed at 0x%x: LLVM recompiler is used.", addr);
 		return false;
 	}
 
-	if (!vm::try_access(addr, &value, sizeof(value), true))
-	{
-		ppu_log.fatal("Patch failed at 0x%x: invalid memory address.", addr);
-		return false;
-	}
+	*vm::get_super_ptr<u32>(addr) = value;
 
 	const u32 _break = ::narrow<u32>(reinterpret_cast<std::uintptr_t>(&ppu_break));
 	const u32 fallback = ::narrow<u32>(reinterpret_cast<std::uintptr_t>(&ppu_fallback));
 
-	if (ppu_ref<u32>(addr) != _break && ppu_ref<u32>(addr) != fallback)
+	if (is_exec)
 	{
-		ppu_ref(addr) = ppu_cache(addr);
+		if (ppu_ref<u32>(addr) != _break && ppu_ref<u32>(addr) != fallback)
+		{
+			ppu_ref(addr) = ppu_cache(addr);
+		}
 	}
 
 	return true;
@@ -398,10 +413,9 @@ std::string ppu_thread::dump_regs() const
 					if (toc % 4 == 0 && vm::check_addr(toc))
 					{
 						is_function = true;
+						reg = reg_ptr;
 					}
 				}
-
-				reg = reg_ptr;
 			}
 			else if (reg % 4 == 0 && vm::check_addr(reg, 4, vm::page_executable))
 			{
@@ -486,7 +500,14 @@ std::vector<std::pair<u32, u32>> ppu_thread::dump_callstack_list() const
 	//std::shared_lock rlock(vm::g_mutex); // Needs optimizations
 
 	// Determine stack range
-	const u32 stack_ptr = static_cast<u32>(gpr[1]);
+	const u64 r1 = gpr[1];
+
+	if (r1 > UINT32_MAX || r1 % 0x10)
+	{
+		return {};
+	}
+
+	const u32 stack_ptr = static_cast<u32>(r1);
 
 	if (!vm::check_addr(stack_ptr, 1, vm::page_writable))
 	{

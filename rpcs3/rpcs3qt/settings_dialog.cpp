@@ -848,6 +848,14 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	SubscribeTooltip(ui->gb_DiskCacheClearing, tooltips.settings.limit_cache_size);
 	connect(ui->enableCacheClearing, &QCheckBox::stateChanged, ui->maximumCacheSize, &QSlider::setEnabled);
 
+	// Date Time Edit Box
+	m_emu_settings->EnhanceDateTimeEdit(ui->console_time_edit, emu_settings_type::ConsoleTimeOffset, tr("dd MMM yyyy HH:mm"), true, true, 15000);
+	connect(ui->console_time_reset, &QAbstractButton::clicked, [this]()
+	{
+		ui->console_time_edit->setDateTime(QDateTime::currentDateTime());
+	});
+	SubscribeTooltip(ui->gb_console_time, tooltips.settings.console_time_offset);
+
 	// Sliders
 
 	EnhanceSlider(emu_settings_type::MaximumCacheSize, ui->maximumCacheSize, ui->maximumCacheSizeLabel, tr("Maximum size: %0 MB", "Maximum cache size"));
@@ -1723,9 +1731,6 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 
 	m_emu_settings->EnhanceCheckBox(ui->accurateGETLLAR, emu_settings_type::AccurateGETLLAR);
 	SubscribeTooltip(ui->accurateGETLLAR, tooltips.settings.accurate_getllar);
-
-	m_emu_settings->EnhanceCheckBox(ui->accuratePUTLLUC, emu_settings_type::AccuratePUTLLUC);
-	SubscribeTooltip(ui->accuratePUTLLUC, tooltips.settings.accurate_putlluc);
 
 	m_emu_settings->EnhanceCheckBox(ui->accurateSpuDMA, emu_settings_type::AccurateSpuDMA);
 	SubscribeTooltip(ui->accurateSpuDMA, tooltips.settings.accurate_spu_dma);

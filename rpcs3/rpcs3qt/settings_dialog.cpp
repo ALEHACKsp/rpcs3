@@ -289,8 +289,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 
 	if (!r_creator)
 	{
-		cfg_log.error("settings_dialog::settings_dialog render_creator is null");
-		return;
+		fmt::throw_exception("settings_dialog::settings_dialog() render_creator is null");
 	}
 
 	r_creator->update_names(
@@ -538,15 +537,15 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 			ui->antiAliasing->setCurrentText(renderer.has_msaa ? qstr(m_emu_settings->GetSetting(emu_settings_type::MSAA)) : tr("Disabled", "MSAA"));
 			ui->antiAliasing->blockSignals(false);
 
+			ui->graphicsAdapterBox->clear();
+
 			// Fill combobox with placeholder if no adapters needed
 			if (!renderer.has_adapters)
 			{
-				ui->graphicsAdapterBox->clear();
 				ui->graphicsAdapterBox->addItem(tr("Not needed for %1 renderer", "Graphics adapter").arg(text));
 				return;
 			}
 			// Fill combobox
-			ui->graphicsAdapterBox->clear();
 			for (const auto& adapter : renderer.adapters)
 			{
 				ui->graphicsAdapterBox->addItem(adapter);
@@ -1743,6 +1742,13 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 
 	m_emu_settings->EnhanceCheckBox(ui->hookStFunc, emu_settings_type::HookStaticFuncs);
 	SubscribeTooltip(ui->hookStFunc, tooltips.settings.hook_static_functions);
+
+	// Comboboxes
+
+	m_emu_settings->EnhanceComboBox(ui->combo_accurate_ppu_128, emu_settings_type::AccuratePPU128Loop, true);
+	SubscribeTooltip(ui->gb_accurate_ppu_128, tooltips.settings.accurate_ppu_128_loop);
+	ui->combo_accurate_ppu_128->setItemText(ui->combo_accurate_ppu_128->findData(-1), tr("Always Enabled", "Accurate PPU 128 Reservations"));
+	ui->combo_accurate_ppu_128->setItemText(ui->combo_accurate_ppu_128->findData(0), tr("Disabled", "Accurate PPU 128 Reservations"));
 
 	// Layout fix for High Dpi
 	layout()->setSizeConstraint(QLayout::SetFixedSize);

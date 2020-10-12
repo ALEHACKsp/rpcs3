@@ -669,7 +669,7 @@ public:
 
 	// Reservation Data
 	u64 rtime = 0;
-	alignas(64) std::array<v128, 8> rdata{};
+	alignas(64) std::byte rdata[128]{};
 	u32 raddr = 0;
 
 	u32 srr0;
@@ -769,6 +769,8 @@ public:
 	void halt();
 
 	void fast_call(u32 ls_addr);
+
+	bool capture_local_storage() const;
 
 	// Convert specified SPU LS address to a pointer of specified (possibly converted to BE) type
 	template<typename T>

@@ -52,7 +52,7 @@ PPUTranslator::PPUTranslator(LLVMContext& context, Module* _module, const ppu_mo
 	m_thread_type = StructType::create(m_context, thread_struct, "context_t");
 
 	// Callable
-	m_call = new GlobalVariable(*_module, ArrayType::get(GetType<u32>(), 0x80000000)->getPointerTo(), true, GlobalValue::ExternalLinkage, 0, fmt::format("__cptr%x", gsuffix));
+	m_call = new GlobalVariable(*_module, ArrayType::get(GetType<u64>(), 0x40000000)->getPointerTo(), true, GlobalValue::ExternalLinkage, 0, fmt::format("__cptr%x", gsuffix));
 	m_call->setInitializer(ConstantPointerNull::get(cast<PointerType>(m_call->getType()->getPointerElementType())));
 	m_call->setExternallyInitialized(true);
 
@@ -331,7 +331,7 @@ void PPUTranslator::CallFunction(u64 target, Value* indirect)
 			}
 		}
 
-		const auto pos = m_ir->CreateShl(m_ir->CreateLShr(indirect, 2, "", true), 1, "", true);
+		const auto pos = m_ir->CreateLShr(indirect, 2, "", true);
 		const auto ptr = m_ir->CreateGEP(m_ir->CreateLoad(m_call), {m_ir->getInt64(0), pos});
 		indirect = m_ir->CreateIntToPtr(m_ir->CreateLoad(ptr), type->getPointerTo());
 	}
@@ -2527,6 +2527,12 @@ void PPUTranslator::MFOCRF(ppu_opcode_t op)
 
 void PPUTranslator::LWARX(ppu_opcode_t op)
 {
+	if (g_cfg.core.ppu_128_reservations_loop_max_length > 0)
+	{
+		// CIA will be used in lwarx handler
+		m_ir->CreateStore(Trunc(GetAddr(), GetType<u32>()), m_ir->CreateStructGEP(nullptr, m_thread, static_cast<uint>(&m_cia - m_locals)), true);
+	}
+
 	SetGpr(op.rd, Call(GetType<u32>(), "__lwarx", m_thread, op.ra ? m_ir->CreateAdd(GetGpr(op.ra), GetGpr(op.rb)) : GetGpr(op.rb)));
 }
 
@@ -2663,6 +2669,12 @@ void PPUTranslator::MULHW(ppu_opcode_t op)
 
 void PPUTranslator::LDARX(ppu_opcode_t op)
 {
+	if (g_cfg.core.ppu_128_reservations_loop_max_length > 0)
+	{
+		// CIA will be used in ldarx handler
+		m_ir->CreateStore(Trunc(GetAddr(), GetType<u32>()), m_ir->CreateStructGEP(nullptr, m_thread, static_cast<uint>(&m_cia - m_locals)), true);
+	}
+
 	SetGpr(op.rd, Call(GetType<u64>(), "__ldarx", m_thread, op.ra ? m_ir->CreateAdd(GetGpr(op.ra), GetGpr(op.rb)) : GetGpr(op.rb)));
 }
 

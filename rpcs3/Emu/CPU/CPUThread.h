@@ -27,9 +27,6 @@ enum class cpu_flag : u32
 
 class cpu_thread
 {
-	// PPU cache backward compatibility hack
-	char dummy[sizeof(std::shared_ptr<void>) - 8];
-
 public:
 	u64 block_hash = 0;
 
@@ -88,7 +85,7 @@ private:
 
 public:
 	// Thread stats for external observation
-	static atomic_t<u64> g_threads_created, g_threads_deleted;
+	static atomic_t<u64> g_threads_created, g_threads_deleted, g_suspend_counter;
 
 	// Get thread name (as assigned to named_thread)
 	std::string get_name() const;
@@ -123,17 +120,49 @@ public:
 	// Callback for cpu_flag::ret
 	virtual void cpu_return() {}
 
-	// Thread locker
-	class suspend_all
+	// For internal use
+	struct suspend_work
 	{
-		cpu_thread* m_this;
+		void* func_ptr;
+		void* res_buf;
 
-	public:
-		suspend_all(cpu_thread* _this) noexcept;
-		suspend_all(const suspend_all&) = delete;
-		suspend_all& operator=(const suspend_all&) = delete;
-		~suspend_all();
+		// Type-erased op executor
+		void (*exec)(void* func, void* res);
+
+		// Next object in the linked list
+		suspend_work* next;
+
+		// Internal method
+		void push(cpu_thread* _this) noexcept;
 	};
+
+	// Suspend all threads and execute op (may be executed by other thread than caller!)
+	template <typename F>
+	static auto suspend_all(cpu_thread* _this, F op)
+	{
+		if constexpr (std::is_void_v<std::invoke_result_t<F>>)
+		{
+			suspend_work work{&op, nullptr, [](void* func, void*)
+			{
+				(*static_cast<F*>(func))();
+			}};
+
+			work.push(_this);
+			return;
+		}
+		else
+		{
+			std::invoke_result_t<F> result;
+
+			suspend_work work{&op, &result, [](void* func, void* res_buf)
+			{
+				*static_cast<std::invoke_result_t<F>*>(res_buf) = (*static_cast<F*>(func))();
+			}};
+
+			work.push(_this);
+			return result;
+		}
+	}
 
 	// Stop all threads with cpu_flag::dbg_global_stop
 	static void stop_all() noexcept;

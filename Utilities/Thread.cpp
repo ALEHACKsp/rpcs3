@@ -1899,7 +1899,17 @@ void thread_base::initialize(void (*error_cb)(), bool(*wait_cb)(const void*))
 void thread_base::notify_abort() noexcept
 {
 	m_signal.try_inc();
-	atomic_storage_futex::raw_notify(+m_state_notifier);
+
+	while (auto ptr = m_state_notifier.load())
+	{
+		// Since this function is not perfectly implemented, run it in a loop
+		atomic_storage_futex::raw_notify(ptr);
+
+		if (m_state_notifier.load() == ptr)
+		{
+			break;
+		}
+	}
 }
 
 bool thread_base::finalize(thread_state result_state) noexcept
@@ -1960,7 +1970,7 @@ bool thread_base::finalize(thread_state result_state) noexcept
 
 void thread_base::finalize() noexcept
 {
-	atomic_storage_futex::set_wait_callback([](const void*){ return true; });
+	atomic_storage_futex::set_wait_callback(nullptr);
 	g_tls_log_prefix = []() -> std::string { return {}; };
 	thread_ctrl::g_tls_this_thread = nullptr;
 }

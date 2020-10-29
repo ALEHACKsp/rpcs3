@@ -7,6 +7,7 @@
 	VFS.cpp
 	GDB.cpp
 	title.cpp
+	perf_meter.cpp
 )
 
 # prevent WolfSSL from warning about not having harden options
@@ -337,10 +338,6 @@ endif()
 target_link_libraries(rpcs3_emu
 	PRIVATE
 		3rdparty::stblib 3rdparty::libpng)
-
-if(CMAKE_COMPILER_IS_GNUCXX)
-	target_link_libraries(rpcs3_emu PUBLIC -latomic)
-endif()
 
 
 # CPU

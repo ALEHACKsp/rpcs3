@@ -4,7 +4,6 @@
 #include "Emu/Cell/SPUInterpreter.h"
 #include "Emu/Memory/vm.h"
 #include "MFC.h"
-#include "Emu/Memory/vm.h"
 #include "Utilities/BEType.h"
 
 #include <map>
@@ -624,8 +623,6 @@ public:
 	virtual std::vector<std::pair<u32, u32>> dump_callstack_list() const override;
 	virtual std::string dump_misc() const override;
 	virtual void cpu_task() override final;
-	virtual void cpu_mem() override;
-	virtual void cpu_unmem() override;
 	virtual void cpu_return() override;
 	virtual ~spu_thread() override;
 	void cpu_init();
@@ -753,13 +750,22 @@ public:
 
 	u64 saved_native_sp = 0; // Host thread's stack pointer for emulated longjmp
 
+	u64 ftx = 0; // Failed transactions
+	u64 stx = 0; // Succeeded transactions (pure counters)
+
+	u64 last_ftsc = 0;
+	u64 last_ftime = 0;
+	u32 last_faddr = 0;
+	u64 last_fail = 0;
+	u64 last_succ = 0;
+
 	std::array<v128, 0x4000> stack_mirror; // Return address information
 
 	const char* current_func{}; // Current STOP or RDCH blocking function
 	u64 start_time{}; // Starting time of STOP or RDCH bloking function
 
 	void push_snr(u32 number, u32 value);
-	void do_dma_transfer(const spu_mfc_cmd& args);
+	static void do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8* ls);
 	bool do_dma_check(const spu_mfc_cmd& args);
 	bool do_list_transfer(spu_mfc_cmd& args);
 	void do_putlluc(const spu_mfc_cmd& args);

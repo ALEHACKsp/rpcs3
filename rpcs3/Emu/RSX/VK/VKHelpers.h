@@ -1,7 +1,6 @@
 ﻿#pragma once
 
 #include "stdafx.h"
-#include <exception>
 #include <string>
 #include <functional>
 #include <vector>
@@ -15,12 +14,13 @@
 #include <X11/Xutil.h>
 #endif
 
-#include "Emu/RSX/GSRender.h"
 #include "VulkanAPI.h"
 #include "VKCommonDecompiler.h"
 #include "../GCM.h"
 #include "../Common/ring_buffer_helper.h"
 #include "../Common/TextureUtils.h"
+#include "../display.h"
+#include "../rsx_utils.h"
 
 #include "3rdparty/GPUOpen/include/vk_mem_alloc.h"
 
@@ -706,7 +706,7 @@ private:
 			vkGetPhysicalDeviceMemoryProperties(pdev, &memory_properties);
 			get_physical_device_features(allow_extensions);
 
-			rsx_log.notice("Found vulkan-compatible GPU: '%s' running on driver %s", get_name(), get_driver_version());
+			rsx_log.always("Found vulkan-compatible GPU: '%s' running on driver %s", get_name(), get_driver_version());
 
 			if (get_driver_vendor() == driver_vendor::RADV &&
 				get_name().find("LLVM 8.0.0") != umax)
@@ -754,7 +754,7 @@ private:
 					return driver_vendor::AMD;
 				}
 
-				if (gpu_name.find("NVIDIA") != umax || gpu_name.find("GeForce") != umax)
+				if (gpu_name.find("NVIDIA") != umax || gpu_name.find("GeForce") != umax || gpu_name.find("Quadro") != umax)
 				{
 					return driver_vendor::NVIDIA;
 				}
@@ -2877,7 +2877,7 @@ public:
 #endif
 		bool createInstance(const char *app_name, bool fast = false)
 		{
-			//Initialize a vulkan instance
+			// Initialize a vulkan instance
 			VkApplicationInfo app = {};
 
 			app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -2887,7 +2887,7 @@ public:
 			app.engineVersion = 0;
 			app.apiVersion = VK_API_VERSION_1_0;
 
-			//Set up instance information
+			// Set up instance information
 
 			std::vector<const char *> extensions;
 			std::vector<const char *> layers;

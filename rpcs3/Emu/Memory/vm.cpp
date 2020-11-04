@@ -12,7 +12,7 @@
 #include "Utilities/address_range.h"
 #include "Emu/CPU/CPUThread.h"
 #include "Emu/Cell/lv2/sys_memory.h"
-#include "Emu/RSX/GSRender.h"
+#include "Emu/RSX/RSXThread.h"
 #include "Emu/Cell/SPURecompiler.h"
 #include "Emu/perf_meter.hpp"
 #include <thread>
@@ -63,8 +63,8 @@ namespace vm
 	// Memory mutex acknowledgement
 	thread_local atomic_t<cpu_thread*>* g_tls_locked = nullptr;
 
-	// Currently locked cache line
-	atomic_t<u64> g_addr_lock = 0;
+	// "Unique locked" range lock, as opposed to "shared" range locks from set
+	atomic_t<u64> g_range_lock = 0;
 
 	// Memory mutex: passive locks
 	std::array<atomic_t<cpu_thread*>, g_cfg.core.ppu_threads.max> g_locks{};
@@ -149,8 +149,6 @@ namespace vm
 			fmt::throw_exception("Out of range lock bits");
 		}
 
-		g_mutex.lock_unlock();
-
 		return &g_range_lock_set[std::countr_one(bits)];
 	}
 
@@ -158,9 +156,52 @@ namespace vm
 	{
 		perf_meter<"RHW_LOCK"_u64> perf0;
 
-		while (true)
+		auto _cpu = get_current_cpu_thread();
+
+		if (_cpu)
 		{
-			std::shared_lock lock(g_mutex);
+			_cpu->state += cpu_flag::wait + cpu_flag::temp;
+		}
+
+		for (u64 i = 0;; i++)
+		{
+			const u64 lock_val = g_range_lock.load();
+			const u64 is_shared = g_shareable[begin >> 16].load();
+			const u64 lock_addr = static_cast<u32>(lock_val); // -> u64
+			const u32 lock_size = static_cast<u32>(lock_val >> 35);
+
+			u64 addr = begin;
+
+			if (is_shared)
+			{
+				addr = addr & 0xffff;
+			}
+
+			if ((lock_val & range_full_mask) != range_locked || addr + size <= lock_addr || addr >= lock_addr + lock_size) [[likely]]
+			{
+				range_lock->store(begin | (u64{size} << 32));
+
+				const u64 new_lock_val = g_range_lock.load();
+
+				if (!new_lock_val || new_lock_val == lock_val) [[likely]]
+				{
+					break;
+				}
+
+				range_lock->store(0);
+			}
+
+			std::shared_lock lock(g_mutex, std::try_to_lock);
+
+			if (!lock && i < 15)
+			{
+				busy_wait(200);
+				continue;
+			}
+			else if (!lock)
+			{
+				lock.lock();
+			}
 
 			u32 test = 0;
 
@@ -183,8 +224,13 @@ namespace vm
 				continue;
 			}
 
-			range_lock->release(begin | u64{size} << 32);
-			return;
+			range_lock->release(begin | (u64{size} << 32));
+			break;
+		}
+
+		if (_cpu)
+		{
+			_cpu->check_state();
 		}
 	}
 
@@ -196,8 +242,6 @@ namespace vm
 		}
 
 		range_lock->release(0);
-
-		std::shared_lock lock(g_mutex);
 
 		// Use ptr difference to determine location
 		const auto diff = range_lock - g_range_lock_set;
@@ -226,37 +270,26 @@ namespace vm
 		return result;
 	}
 
-	static void _lock_shareable_cache(u8 value, u32 addr, u32 size)
+	static void _lock_main_range_lock(u64 flags, u32 addr, u32 size)
 	{
-		// Block new range locks
-		g_addr_lock = addr | u64{size} << 32;
-
-		ASSUME(size);
-
-		const auto range = utils::address_range::start_length(addr, size);
-
-		// Wait for range locks to clear
-		while (true)
+		// Shouldn't really happen
+		if (size == 0)
 		{
-			const u64 bads = for_all_range_locks([&](u32 addr2, u32 size2)
-			{
-				ASSUME(size2);
-
-				if (range.overlaps(utils::address_range::start_length(addr2, size2))) [[unlikely]]
-				{
-					return 1;
-				}
-
-				return 0;
-			});
-
-			if (!bads)
-			{
-				return;
-			}
-
-			_mm_pause();
+			vm_log.warning("Tried to lock empty range (flags=0x%x, addr=0x%x)" HERE, flags >> 32, addr);
+			g_range_lock.release(0);
+			return;
 		}
+
+		// Limit to 256 MiB at once; make sure if it operates on big amount of data, it's page-aligned
+		if (size > 256 * 1024 * 1024 || (size > 65536 && size % 4096))
+		{
+			fmt::throw_exception("Failed to lock range (flags=0x%x, addr=0x%x, size=0x%x)" HERE, flags >> 32, addr, size);
+		}
+
+		// Block or signal new range locks
+		g_range_lock = addr | u64{size} << 35 | flags;
+
+
 	}
 
 	void passive_lock(cpu_thread& cpu)
@@ -327,7 +360,7 @@ namespace vm
 
 		if (g_tls_locked && g_tls_locked->compare_and_swap_test(&cpu, nullptr))
 		{
-			cpu.cpu_unmem();
+			cpu.state += cpu_flag::memory;
 		}
 	}
 
@@ -422,7 +455,7 @@ namespace vm
 				addr = addr & 0xffff;
 			}
 
-			g_addr_lock = addr | (u64{128} << 32);
+			g_range_lock = addr | (u64{128} << 35) | range_locked;
 
 			const auto range = utils::address_range::start_length(addr, 128);
 
@@ -472,7 +505,7 @@ namespace vm
 
 	writer_lock::~writer_lock()
 	{
-		g_addr_lock.release(0);
+		g_range_lock.release(0);
 		g_mutex.unlock();
 	}
 
@@ -543,16 +576,20 @@ namespace vm
 
 	void reservation_op_internal(u32 addr, std::function<bool()> func)
 	{
-		cpu_thread::suspend_all(get_current_cpu_thread(), [&]
+		auto& res = vm::reservation_acquire(addr, 1);
+		auto* ptr = vm::get_super_ptr(addr & -128);
+
+		cpu_thread::suspend_all(get_current_cpu_thread(), {ptr, ptr + 64, &res}, [&]
 		{
 			if (func())
 			{
-				// Success, release all locks if necessary
-				vm::reservation_acquire(addr, 128) += 127;
+				// Success, release the lock and progress
+				res += 127;
 			}
 			else
 			{
-				vm::reservation_acquire(addr, 128) -= 1;
+				// Only release the lock on failure
+				res -= 1;
 			}
 		});
 	}
@@ -563,17 +600,21 @@ namespace vm
 
 		if (_cpu && _cpu->id_type() == 1)
 		{
-			thread_ctrl::emergency_exit("vm::reservation_escape");
+			// TODO: PPU g_escape
 		}
 
 		if (_cpu && _cpu->id_type() == 2)
 		{
 			spu_runtime::g_escape(static_cast<spu_thread*>(_cpu));
 		}
+
+		thread_ctrl::emergency_exit("vm::reservation_escape");
 	}
 
 	static void _page_map(u32 addr, u8 flags, u32 size, utils::shm* shm, std::pair<const u32, std::pair<u32, std::shared_ptr<utils::shm>>>* (*search_shm)(vm::block_t* block, utils::shm* shm))
 	{
+		perf_meter<"PAGE_MAP"_u64> perf0;
+
 		if (!size || (size | addr) % 4096 || flags & page_allocated)
 		{
 			fmt::throw_exception("Invalid arguments (addr=0x%x, size=0x%x)" HERE, addr, size);
@@ -587,16 +628,11 @@ namespace vm
 			}
 		}
 
+		// Lock range being mapped
+		_lock_main_range_lock(range_allocation, addr, size);
+
 		if (shm && shm->flags() != 0 && shm->info++)
 		{
-			// Memory mirror found, map its range as shareable
-			_lock_shareable_cache(1, addr, size);
-
-			for (u32 i = addr / 65536; i < addr / 65536 + size / 65536; i++)
-			{
-				g_shareable[i].release(1);
-			}
-
 			// Check ref counter (using unused member info for it)
 			if (shm->info == 2)
 			{
@@ -609,9 +645,6 @@ namespace vm
 						{
 							auto& [size2, ptr] = pp->second;
 
-							// Relock cache
-							_lock_shareable_cache(1, pp->first, size2);
-
 							for (u32 i = pp->first / 65536; i < pp->first / 65536 + size2 / 65536; i++)
 							{
 								g_shareable[i].release(1);
@@ -619,10 +652,16 @@ namespace vm
 						}
 					}
 				}
+
+				// Unsharing only happens on deallocation currently, so make sure all further refs are shared
+				shm->info = UINT32_MAX;
 			}
 
-			// Unlock
-			g_addr_lock.release(0);
+			// Map range as shareable
+			for (u32 i = addr / 65536; i < addr / 65536 + size / 65536; i++)
+			{
+				g_shareable[i].release(1);
+			}
 		}
 
 		// Notify rsx that range has become valid
@@ -660,10 +699,15 @@ namespace vm
 				fmt::throw_exception("Concurrent access (addr=0x%x, size=0x%x, flags=0x%x, current_addr=0x%x)" HERE, addr, size, flags, i * 4096);
 			}
 		}
+
+		// Unlock
+		g_range_lock.release(0);
 	}
 
 	bool page_protect(u32 addr, u32 size, u8 flags_test, u8 flags_set, u8 flags_clear)
 	{
+		perf_meter<"PAGE_PRO"_u64> perf0;
+
 		vm::writer_lock lock(0);
 
 		if (!size || (size | addr) % 4096)
@@ -690,47 +734,52 @@ namespace vm
 			return true;
 		}
 
-		u8 start_value = 0xff;
-		u8 shareable = 0;
+		// Choose some impossible value (not valid without page_allocated)
+		u8 start_value = page_executable;
 
 		for (u32 start = addr / 4096, end = start + size / 4096, i = start; i < end + 1; i++)
 		{
-			u32 new_val = 0xff;
+			u8 new_val = page_executable;
 
 			if (i < end)
 			{
 				new_val = g_pages[i].flags;
 				new_val |= flags_set;
 				new_val &= ~flags_clear;
-
-				shareable = g_shareable[i / 16];
 			}
 
-			if (new_val != start_value || g_shareable[i / 16] != shareable)
+			if (new_val != start_value)
 			{
-				if (u32 page_size = (i - start) * 4096)
+				const u8 old_val = g_pages[start].flags;
+
+				if (u32 page_size = (i - start) * 4096; page_size && old_val != start_value)
 				{
+					u64 safe_bits = 0;
+
+					if (old_val & start_value & page_readable)
+						safe_bits |= range_readable;
+					if (old_val & start_value & page_writable && safe_bits & range_readable)
+						safe_bits |= range_writable;
+					if (old_val & start_value & page_executable && safe_bits & range_readable)
+						safe_bits |= range_executable;
+
 					// Protect range locks from observing changes in memory protection
-					if (shareable)
-					{
-						// Unoptimized
-						_lock_shareable_cache(2, 0, 0x10000);
-					}
-					else
-					{
-						_lock_shareable_cache(2, start * 4096, page_size);
-					}
+					_lock_main_range_lock(safe_bits, start * 4096, page_size);
 
 					for (u32 j = start; j < i; j++)
 					{
-						g_pages[j].flags.release(new_val);
+						g_pages[j].flags.release(start_value);
 					}
 
-					if ((new_val ^ start_value) & (page_readable | page_writable))
+					if ((old_val ^ start_value) & (page_readable | page_writable))
 					{
 						const auto protection = start_value & page_writable ? utils::protection::rw : (start_value & page_readable ? utils::protection::ro : utils::protection::no);
 						utils::memory_protect(g_base_addr + start * 4096, page_size, protection);
 					}
+				}
+				else
+				{
+					g_range_lock.release(0);
 				}
 
 				start_value = new_val;
@@ -738,13 +787,15 @@ namespace vm
 			}
 		}
 
-		g_addr_lock.release(0);
+		g_range_lock.release(0);
 
 		return true;
 	}
 
 	static u32 _page_unmap(u32 addr, u32 max_size, utils::shm* shm)
 	{
+		perf_meter<"PAGE_UNm"_u64> perf0;
+
 		if (!max_size || (max_size | addr) % 4096)
 		{
 			fmt::throw_exception("Invalid arguments (addr=0x%x, max_size=0x%x)" HERE, addr, max_size);
@@ -774,19 +825,18 @@ namespace vm
 			size += 4096;
 		}
 
-		if (shm && shm->flags() != 0 && (--shm->info || g_shareable[addr >> 16]))
+		// Protect range locks from actual memory protection changes
+		_lock_main_range_lock(range_allocation, addr, size);
+
+		if (shm && shm->flags() != 0 && g_shareable[addr >> 16])
 		{
-			// Remove mirror from shareable cache
-			_lock_shareable_cache(3, 0, 0x10000);
+			shm->info--;
 
 			for (u32 i = addr / 65536; i < addr / 65536 + size / 65536; i++)
 			{
 				g_shareable[i].release(0);
 			}
 		}
-
-		// Protect range locks from actual memory protection changes
-		_lock_shareable_cache(3, addr, size);
 
 		for (u32 i = addr / 4096; i < addr / 4096 + size / 4096; i++)
 		{
@@ -829,7 +879,7 @@ namespace vm
 		}
 
 		// Unlock
-		g_addr_lock.release(0);
+		g_range_lock.release(0);
 
 		return size;
 	}

@@ -24,6 +24,8 @@ LOG_CHANNEL(sys_log, "SYS");
 
 static thread_local u64 s_tls_thread_slot = -1;
 
+extern thread_local void(*g_tls_log_control)(const char* fmt, u64 progress);
+
 template <>
 void fmt_class_string<cpu_flag>::format(std::string& out, u64 arg)
 {
@@ -469,6 +471,26 @@ void cpu_thread::operator()()
 		}
 	});
 
+	g_tls_log_control = [](const char* fmt, u64 progress)
+	{
+		static thread_local bool wait_set = false;
+
+		cpu_thread* _cpu = get_current_cpu_thread();
+
+		if (progress == 0 && !(_cpu->state & cpu_flag::wait))
+		{
+			_cpu->state += cpu_flag::wait + cpu_flag::temp;
+			wait_set = true;
+			return;
+		}
+
+		if (progress == umax && std::exchange(wait_set, false))
+		{
+			verify(HERE), !_cpu->check_state();
+			return;
+		}
+	};
+
 	static thread_local struct thread_cleanup_t
 	{
 		cpu_thread* _this;
@@ -493,6 +515,8 @@ void cpu_thread::operator()()
 			}
 
 			atomic_storage_futex::set_notify_callback(nullptr);
+
+			g_tls_log_control = [](const char*, u64){};
 
 			g_fxo->get<cpu_counter>()->remove(_this, s_tls_thread_slot);
 
@@ -551,11 +575,6 @@ cpu_thread::cpu_thread(u32 id)
 
 bool cpu_thread::check_state() noexcept
 {
-	if (state & cpu_flag::dbg_pause)
-	{
-		g_fxo->get<gdb_server>()->pause_from(this);
-	}
-
 	bool cpu_sleep_called = false;
 	bool cpu_can_stop = true;
 	bool escape, retval;
@@ -568,14 +587,10 @@ bool cpu_thread::check_state() noexcept
 		{
 			bool store = false;
 
-			// Easy way obtain suspend counter
 			if (flags & cpu_flag::pause && !(flags & cpu_flag::wait))
 			{
+				// Save value before state is saved and cpu_flag::wait is observed
 				susp_ctr = g_suspend_counter;
-			}
-			else
-			{
-				susp_ctr = -1;
 			}
 
 			if (flags & cpu_flag::temp) [[unlikely]]
@@ -587,7 +602,7 @@ bool cpu_thread::check_state() noexcept
 				store = true;
 			}
 
-			if (flags & cpu_flag::signal)
+			if (cpu_can_stop && flags & cpu_flag::signal)
 			{
 				flags -= cpu_flag::signal;
 				cpu_sleep_called = false;
@@ -597,8 +612,8 @@ bool cpu_thread::check_state() noexcept
 			// Atomically clean wait flag and escape
 			if (!(flags & (cpu_flag::exit + cpu_flag::dbg_global_stop + cpu_flag::ret + cpu_flag::stop)))
 			{
-				// Check pause flags which hold thread inside check_state
-				if (flags & (cpu_flag::pause + cpu_flag::suspend + cpu_flag::dbg_global_pause + cpu_flag::dbg_pause + cpu_flag::memory))
+				// Check pause flags which hold thread inside check_state (ignore suspend on cpu_flag::temp)
+				if (flags & (cpu_flag::pause + cpu_flag::dbg_global_pause + cpu_flag::dbg_pause + cpu_flag::memory + (cpu_can_stop ? cpu_flag::suspend : cpu_flag::pause)))
 				{
 					if (!(flags & cpu_flag::wait))
 					{
@@ -651,16 +666,15 @@ bool cpu_thread::check_state() noexcept
 			}
 
 			verify(HERE), cpu_can_stop || !retval;
-			verify(HERE), cpu_can_stop || !(state & cpu_flag::wait);
 			return retval;
 		}
 
-		if (!cpu_sleep_called && state0 & cpu_flag::suspend)
+		if (cpu_can_stop && !cpu_sleep_called && state0 & cpu_flag::suspend)
 		{
 			cpu_sleep();
 			cpu_sleep_called = true;
 
-			if (cpu_can_stop && s_tls_thread_slot != umax)
+			if (s_tls_thread_slot != umax)
 			{
 				// Exclude inactive threads from the suspend list (optimization)
 				std::lock_guard lock(g_fxo->get<cpu_counter>()->cpu_suspend_lock);
@@ -671,8 +685,13 @@ bool cpu_thread::check_state() noexcept
 			continue;
 		}
 
-		if (state0 & (cpu_flag::suspend + cpu_flag::dbg_global_pause + cpu_flag::dbg_pause))
+		if (state0 & ((cpu_can_stop ? cpu_flag::suspend : cpu_flag::dbg_pause) + cpu_flag::dbg_global_pause + cpu_flag::dbg_pause))
 		{
+			if (state0 & cpu_flag::dbg_pause)
+			{
+				g_fxo->get<gdb_server>()->pause_from(this);
+			}
+
 			thread_ctrl::wait();
 		}
 		else
@@ -686,18 +705,38 @@ bool cpu_thread::check_state() noexcept
 			// If only cpu_flag::pause was set, wait on suspend counter instead
 			if (state0 & cpu_flag::pause)
 			{
+				if (state0 & cpu_flag::wait)
+				{
+					// Otherwise, value must be reliable because cpu_flag::wait hasn't been observed yet
+					susp_ctr = -1;
+				}
+
 				// Hard way
-				if (susp_ctr == umax)
+				if (susp_ctr == umax) [[unlikely]]
 				{
 					g_fxo->get<cpu_counter>()->cpu_suspend_lock.lock_unlock();
 					continue;
 				}
 
 				// Wait for current suspend_all operation
-				while (busy_wait(), g_suspend_counter == susp_ctr)
+				for (u64 i = 0;; i++)
 				{
-					g_suspend_counter.wait(susp_ctr);
+					if (i < 20)
+					{
+						busy_wait(300);
+					}
+					else
+					{
+						g_suspend_counter.wait(susp_ctr);
+					}
+
+					if (!(state & cpu_flag::pause))
+					{
+						break;
+					}
 				}
+
+				susp_ctr = -1;
 			}
 		}
 	}
@@ -784,9 +823,6 @@ bool cpu_thread::suspend_work::push(cpu_thread* _this, bool cancel_if_not_suspen
 	// Can't allow pre-set wait bit (it'd be a problem)
 	verify(HERE), !_this || !(_this->state & cpu_flag::wait);
 
-	// Value must be reliable because cpu_flag::wait hasn't been observed only (but not if pause is set)
-	const u64 susp_ctr = g_suspend_counter;
-
 	// cpu_counter object
 	const auto ctr = g_fxo->get<cpu_counter>();
 
@@ -852,18 +888,21 @@ bool cpu_thread::suspend_work::push(cpu_thread* _this, bool cancel_if_not_suspen
 			}
 		});
 
-		while (std::accumulate(std::begin(ctr->cpu_copy_bits), std::end(ctr->cpu_copy_bits), u64{0}, std::bit_or()))
+		while (true)
 		{
 			// Check only CPUs which haven't acknowledged their waiting state yet
 			for_all_cpu<true>([&](cpu_thread* cpu, u64 index)
 			{
-				verify(HERE), cpu->state & cpu_flag::pause;
-
 				if (cpu->state & cpu_flag::wait)
 				{
 					ctr->cpu_copy_bits[index / 64] &= ~(1ull << (index % 64));
 				}
 			});
+
+			if (!std::accumulate(std::begin(ctr->cpu_copy_bits), std::end(ctr->cpu_copy_bits), u64{0}, std::bit_or()))
+			{
+				break;
+			}
 
 			_mm_pause();
 		}
@@ -892,12 +931,19 @@ bool cpu_thread::suspend_work::push(cpu_thread* _this, bool cancel_if_not_suspen
 			while (prev);
 		}
 
+		// Execute prefetch hint(s)
+		for (auto work = head; work; work = work->next)
+		{
+			for (u32 i = 0; i < work->prf_size; i++)
+			{
+				_m_prefetchw(work->prf_list[0]);
+			}
+		}
+
 		for_all_cpu<true>([&](cpu_thread* cpu)
 		{
 			_m_prefetchw(&cpu->state);
 		});
-
-		_m_prefetchw(&g_suspend_counter);
 
 		// Execute all stored workload
 		for (s32 prio = max_prio; prio >= min_prio; prio--)
@@ -913,6 +959,9 @@ bool cpu_thread::suspend_work::push(cpu_thread* _this, bool cancel_if_not_suspen
 			}
 		}
 
+		// Not sure if needed, may be overkill. Some workloads may execute instructions with non-temporal hint.
+		_mm_sfence();
+
 		// Finalization
 		g_suspend_counter++;
 
@@ -927,14 +976,7 @@ bool cpu_thread::suspend_work::push(cpu_thread* _this, bool cancel_if_not_suspen
 	else
 	{
 		// Seems safe to set pause on self because wait flag hasn't been observed yet
-		_this->state += cpu_flag::pause + cpu_flag::wait;
-
-		// Subscribe for notification broadcast
-		while (busy_wait(), g_suspend_counter == susp_ctr)
-		{
-			g_suspend_counter.wait(susp_ctr);
-		}
-
+		_this->state += cpu_flag::pause + cpu_flag::temp;
 		_this->check_state();
 		return true;
 	}
